@@ -1,0 +1,175 @@
+
+                 INPUT-DATA for PDR program
+
+I. Physical input parameters
+
+Total H particle density at cloud surface (in 1/cm**3):   XNSUR
+KT_VARxnsur_
+Exponent of density-law:   ALPHA
+KT_VARalpha_
+core radius (in times Radius) old 0.2d0:   RCORE
+KT_VARrcore_
+Pseudo dust cross section (in cm**2):   SIGD
+KT_VARsigd_
+Radius of the cloud (in cm) (1.02d17=0.032 pc, Av=10, r=9.684d16):  RTOT
+KT_VARrtot_
+Strength of radiation field:   SINT
+KT_VARsint_
+Cosmic ray destruction rate (1/sec) old 5.0d-17:   COSRAY
+KT_VARcosray_
+Line (Doppler) width (in cm/sec) (old 0.7213d5):   BETA   (neg value enforces Larson 1981)
+KT_VARbeta_
+Metalicity :  ZMETAL
+KT_VARzmetal_
+Abundances He,O,C,SI,C13 (old 0.1d0, 5.0d-4, 3.0d-4, 4.5d-6, 4.5d-6) relatively to total particle density:  here dummy values, overwritten by cards below
+0.0d0, 0.0d0, 0.0d0, 0.0d0, 0.0d0
+Preshielding factors for H2 and CO:   PRESHH2, PRESHCO
+KT_VARpreshh2_ , KT_VARpreshco_
+Choose method of FUV radiative transfer and dust temp calculations [0=old, 1=mrt.exe output] IFUVMETH, IDUSTMET
+KT_VARifuvmeth_
+KT_VARidustmet_
+Specify type of FUV field (0=none, 1= CMB, 2=Draine(default), 4=black-body (temp in FUVTEMP), 5=read from file (file name in FUVSTRING)     IFUVTYPE FUVTEMP FUVSTRING
+KT_VARifuvtype_
+KT_VARfuvtemp_
+KT_VARfuvstring_
+Rescale UMIST photorates according to Eq (16) in Röllig et al. 2012 [1=on, 0=off] INEWGAM
+KT_VARinewgam_
+Choose method of scattering treatment xkscat(:=1=>albedo=0; :=-1=>kscat computed) ISCATTER
+KT_VARiscatter_
+Calculate gas temperature [1=on, 0=off], if not, give Tgas     IHTCLGAS, TGAS
+KT_VARihtclgas_
+KT_VARtgasc_
+Calculate dust temperature [1=on, 0=off], if not, give Tdust   IHTCLDUST, TDUST
+KT_VARihtcldust_
+KT_VARtdustc_
+Choose PE heating [0=BT94, 1=WD01] IPEHMETH,  (INDS7 -> 4) indxpeh
+KT_VARipehmeth_
+KT_VARindxpeh_
+Include PAH's in PE heating [1=yes, 0=no], (eq. 43 in Bakes&Tielens, 94)  IHTCLPAH
+KT_VARihtclpah_
+Specify Dust Composition: (0=MRN,1=WD01,2=MRNlike) and # of components (MRN=2,WD01=4,MRNlike=4) INDSTR, INDS
+KT_VARindstr_
+KT_VARinds_
+KT_VARindx_
+Specify dust-to-gas ratio in case of WD01like (INDSTR=3) composition
+KT_VARd2gratio1_, KT_VARd2gratio2_, KT_VARd2gratio3_, KT_VARd2gratio4_, KT_VARd2gratio5_, KT_VARd2gratio6_, KT_VARd2gratio7_, KT_VARd2gratio8_, KT_VARd2gratio9_, KT_VARd2gratio10_
+Specify H2 formation (0=SD89, 1=C&T2002, 2=fixed 3=Benchmark) and if H2 is formed on PAHs (0=no, 1=yes), IH2METH, IH2ONPAH
+KT_VARih2meth_
+KT_VARih2onpah_
+KT_VARh2formc_
+Specify H2 shielding treatment for chemistry (0=FGK, 1=DB96)
+KT_VARih2shld_
+Specify H2 level treatment (0=only vib levels, 1=ro-vib structure, 2=ro-vib structure post-process) h2_structure
+KT_VARh2_structure_
+H2 ro vib excitation:  H - H2 collision rates (0:S&D89, 1: Lepp et al., 2: M&M1995, 3: Flower et al.)
+KT_VARh2_h_coll_rates_
+H2 ro vib excitation:  H - H2 use reactive collisions [0=no, 1=yes]  h2_h_coll_rates
+KT_VARh2_h_reactive_colls_
+H2 ro vib collisions: use g-bar approximation by Shaw et al 2005 [0=no, 1=yes] h2_use_gbar
+KT_VARh2_use_gbar__
+H2 ro vib excitation:  H2 quadrupole transition A values (0: Turner, J. et al. 1977, 1: Wolniewicz, L. et al.  1998)
+KT_VARh2_quad_a_
+IFH2DES: allow for H2 formation induced desorption (0=no, 1=yes)
+KT_VARifh2des_
+IFCRDES: allow for CR  induced desorption (0=no, 1=yes)
+KT_VARifcrdes_
+IFPHDES: allow for photo desorption (0=no, 1=yes)
+KT_VARifphdes_
+IFTHDES: allow for thermal desorption (0=no, 1=yes)
+KT_VARifthdes_
+Number density of binding sites per grain surface (default: 1.5d15 cm^-2) BINDSITES
+KT_VARbindsites_
+Include chemical heating to the energy balance [0=no, 1=yes] IFCHEMHEAT
+KT_VARifchemheat_
+Include Alfven heating in ion-neutral reactions HEAT_ALFVEN [0=no, 1=yes],alfven_velocity (cm/s),alfven_column (H2)
+KT_VARifheat_alfven_
+KT_VARalfven_velocity_
+KT_VARalfven_column_
+
+II. Numerical input parameters
+
+Start value for temperature (in K) use 0.0d0 to use internal heuristics to guess TSTART:   T
+KT_VARtemp_start_
+Method of T solution (0: legacy, 1: Brent, 2: hybrid, 3: AMRSEARCH): ITMETH
+KT_VARitmeth_
+Method of solving the chemical network (0=simple/DGESV, 1=advanced/DGESVX, 2=DSGESV):ICHEMETH
+KT_VARichemeth_
+Apply elemental conservation equations (0=false, 1=true) use_conservation
+KT_VARuse_conservation_
+Preconditioning of Jacobian and RHS vector F (0=false, 1=true) rescaleQF
+KT_VARrescaleQF_
+Preconditioning of Jacobian and RHS vector F (0=false, 1=true) precondLR
+KT_VARprecondLR_
+Preconditioning of Jacobian and RHS vector F (0=false, 1=true) resortQF
+KT_VARresortQF_
+Use time dependent chemistry if no convergence under steady state (0=false, 1=true) nconv_time
+KT_VARnconv_time_
+Use time dependent chemistry instead of steady-state (0=false, 1=true) time_dependent
+KT_VARtime_dependent_
+initial time step for time-dependent solution [yrs] first_time_step
+KT_VARfirst_time_step_yrs_
+maximum time for time-dependent solution [yrs] max_time
+KT_VARmax_time_yrs_
+Number of time-steps for fully time-dependent computation  num_time_steps (0=auto, 1 = 1 step, ...)
+KT_VARnum_time_steps_
+choose DLSODES for time-dep computation (0=false, 1=true) use_DLSODES
+KT_VARuse_dlsodes_
+choose DLSODA for time-dep computation (0=false, 1=true) use_DLSODA
+KT_VARuse_dlsoda_
+choose DVODPK  for time-dep computation (0=false, 1=true) use_DVODPK
+KT_VARuse_dvodpk_
+relative error tolerance for time-dep ODE solver  RTOL
+KT_VARrtol_chem_
+absolute error tolerance for time-dep ODE solver  ATOL (is multiplied by total gas density)
+KT_VARatol_chem_
+First step for IVPS (in cm):   XHTRY
+KT_VARXhtry_
+relative error tolerance for iteration convergence checks  RTOL_ITER
+KT_VARrtol_iter_
+Maximal number of iterations:   NITER
+KT_VARNiter_
+Maximal step size in regions where CO is dissociated:   STEP1  (STEP=ZTOT/STEP1)
+KT_VARstep1_
+Maximal step size in regions where CO is not dissociated:   STEP2  (STEP=ZTOT/STEP2)
+KT_VARstep2_
+Output style ( 0 -> old style, 1 -> hdf files, 2 -> both format)
+KT_VARihdfout_
+Debug level (0=off, 1=error, 2=warining, 3=Info, 4=verbose)
+KT_VARdbglvl_
+*
+*
+*** IF THE NEXT IS ACTIVATED, THE CODE MUST BE STARTED BY "PDR_GRID.JOB"
+KT_VARgrid_
+*
+*
+*** CHECKING THE STATISTICAL EQUILIBRIUM IN THE CHEMICAL NETWORK
+***   ALL DEPTH POINT, ALL ITERATIIONS (VERY LARGE FILE!!):
+*CHEMCHECK ALL   5
+***   ALL DEPTH POINT, LAST ITERATIION:
+CHEMCHECK END   5
+***           ^^^ = X STRONGEST REACTIONS WHICH ARE PRINTED
+*
+*  LIST OF SPECIES, WHICH SHOULD BE CONSIDERED (ELECTR, H, H2 ARE
+*||||||  ||||||||||                             INCLUDED AUTOMATICALLY)
+KT_VARspecies_
+**
+**
+**  ELEMENT ABUNDANCES
+** from Simon-Diaz & Stasinska (2011)
+HELIUM       KT_VARelfrac4_
+CARBON       KT_VARelfrac12_
+13CARBON     KT_VARelfrac13_
+NITROGEN     KT_VARelfrac14_
+OXYGEN       KT_VARelfrac16_
+18OXYGEN     KT_VARelfrac18_
+SODIUM       KT_VARelfrac23_
+MAGNESIUM    KT_VARelfrac24_
+**FLUOR        3.0D-8
+SILICON      KT_VARelfrac28_
+PHOSPHORUS   KT_VARelfrac31_
+*** changed suplfur from 2.8e-5 to 2.8e-8!!!!!
+SULFUR       KT_VARelfrac32_
+CHLORINE     KT_VARelfrac35_
+IRON         KT_VARelfrac56_
+** IRON         2.5D-7
+FLUORINE     KT_VARelfrac19_

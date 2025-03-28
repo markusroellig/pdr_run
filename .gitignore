@@ -1,0 +1,42 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.sav
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+eggs/
+
+# Testing
+.coverage
+.pytest_cache/
+
+# Database
+kosma_tau.db
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*~
+.*.swp
+
+
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Output directories that shouldn't be tracked
+Out/
+pdroutput/
+onionoutput/
