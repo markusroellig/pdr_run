@@ -83,7 +83,7 @@ class KOSMAtauParameters(Base):
     sigd   = Column(Float, default=1.9e-21)  # dust UV cross section (cm^2)
     sint   = Column(Float, default=None)  #FUV radiation field strength
     cosray = Column(Float, default=2.0e-16)  # cosmic ray ionization rate (s^-1)
-    beta   = Column(Float, default=-1.0)  # Doppler line width 7.123e4 = 1 km/s FWHM, neg = Larson
+    beta   = Column(Float, default=-1.0e0)  # Doppler line width 7.123e4 = 1 km/s FWHM, neg = Larson
     zmetal = Column(Float, default=1.0)  #
     preshh2  = Column(Float, default=0.0)  #
     preshco  = Column(Float, default=0.0)  #
@@ -125,7 +125,7 @@ class KOSMAtauParameters(Base):
     h2_quad_a = Column(Integer, default=1) #
     ## Surface chemistry
     ifh2des = Column(Integer, default=1) #
-    ifcrdes = Column(Integer, default=1) #
+    ifcrdes = Column(Integer, default=2) #
     ifphdes = Column(Integer, default=1) #
     ifthdes = Column(Integer, default=1) #
     bindsites= Column(Float, default=1.5e15)  #
@@ -140,7 +140,7 @@ class KOSMAtauParameters(Base):
     inewtonstep = Column(Integer, default=1) #
     omega_neg = Column(Float, default=5.0e0) #
     omega_pos = Column(Float, default=2.0e0) #
-    Column("lambda", Float ,default=0.5e0) #
+    lambda_newt = Column(Float ,default=0.5e0) #
     use_conservation = Column(Integer, default=1) #
     rescaleQF = Column(Integer, default=0) #
     precondLR = Column(Integer, default=0) #
@@ -173,7 +173,7 @@ class KOSMAtauParameters(Base):
     elfrac20 = Column(Float, default=6.9e-5)   # Ne
     elfrac23 = Column(Float, default=2.0e-7)   # Na
     elfrac24 = Column(Float, default=3.2e-6)   # Mg
-    elfrac27_= Column(Float, default=2.8e-6)   # Al
+    elfrac27 = Column(Float, default=2.8e-6)   # Al
     elfrac28 = Column(Float, default=3.17e-6)  # Si
     elfrac31 = Column(Float, default=1.17e-7)  # P
     elfrac32 = Column(Float, default=7.41e-6)  # S
@@ -312,6 +312,7 @@ class JSONFile(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
     path = Column(String(512), nullable=False)
+    archived_path = Column(String(512))  # Add this column for archived file path
     sha256_sum = Column(String(64), unique=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     

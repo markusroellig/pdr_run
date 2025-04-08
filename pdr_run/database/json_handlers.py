@@ -445,3 +445,212 @@ def update_job_output_json(job_id, output_path):
     session.commit()
     
     return json_file
+
+def initialize_default_templates(template_dir=None):
+    """Initialize default JSON templates in the database.
+    
+    Scans the provided template directory (or default templates directory)
+    and registers any templates that don't already exist in the database.
+    
+    Args:
+        template_dir (str, optional): Directory containing template files
+            If None, uses the default templates directory from config
+            
+    Returns:
+        list: List of registered template objects
+    """
+    from pdr_run.config.default_config import get_config
+    import glob
+    
+    # Get templates directory from config if not provided
+    if template_dir is None:
+        config = get_config()
+        template_dir = config.get('templates_dir', os.path.join(os.path.dirname(__file__), '../templates'))
+    
+    # Ensure the directory exists
+    if not os.path.exists(template_dir):
+        logger.warning(f"Templates directory {template_dir} does not exist. Creating it.")
+        os.makedirs(template_dir, exist_ok=True)
+        return []
+    
+    # Find all JSON template files in the directory
+    template_files = glob.glob(os.path.join(template_dir, "*.json.template"))
+    if not template_files:
+        logger.warning(f"No template files found in {template_dir}")
+        return []
+    
+    # Register each template
+    registered_templates = []
+    session = _get_session()
+    
+    for template_path in template_files:
+        template_name = os.path.basename(template_path).replace(".json.template", "")
+        
+        # Check if template with this hash already exists
+        template_hash = get_json_hash(template_path)
+        existing = session.query(JSONTemplate).filter_by(sha256_sum=template_hash).first()
+        
+        if existing:
+            logger.info(f"Template {template_name} already registered with hash {template_hash[:8]}...")
+            registered_templates.append(existing)
+            continue
+            
+        # Create a short description from the first few lines
+        description = None
+        try:
+            with open(template_path, 'r') as f:
+                content = f.read(1000)  # Read first 1000 chars
+                # If there's a comment at the top, use it as description
+                if content.strip().startswith(('/*', '//', '#')):
+                    description = content.split('\n', 1)[0].strip('/* \t\n')
+        except Exception as e:
+            logger.warning(f"Couldn't read template {template_path}: {e}")
+            
+        # Register the template
+        template = register_json_template(
+            name=template_name,
+            path=template_path,
+            description=description
+        )
+        registered_templates.append(template)
+        logger.info(f"Registered template {template_name} from {template_path}")
+    
+    # Create a default template if none exists
+    if not session.query(JSONTemplate).filter_by(name="default").first():
+        # If we have any templates, set the first one as default
+        if registered_templates:
+            default = registered_templates[0]
+            default_copy = register_json_template(
+                name="default",
+                path=default.path,
+                description=f"Default template (copy of {default.name})"
+            )
+            logger.info(f"Created default template based on {default.name}")
+            registered_templates.append(default_copy)
+            
+    return registered_templates
+
+def update_json_template(template_id, name=None, path=None, description=None):
+    """Update an existing JSON template in the database.
+    
+    Args:
+        template_id (int): ID of the template to update
+        name (str, optional): New name for the template
+        path (str, optional): New path for the template file
+        description (str, optional): New description for the template
+        
+    Returns:
+        JSONTemplate: The updated template object, or None if not found
+        
+    Raises:
+        ValueError: If the template doesn't exist
+    """
+    from .models import JSONTemplate
+    session = _get_session()
+    
+    template = session.get(JSONTemplate, template_id)
+    if not template:
+        raise ValueError(f"Template with ID {template_id} not found")
+    
+    # Update fields if provided
+    if name:
+        template.name = name
+    if path:
+        template.path = path
+        # Update hash if path changed
+        template.sha256_sum = get_json_hash(path)
+    if description:
+        template.description = description
+        
+    session.commit()
+    return template
+
+def delete_json_template(template_id, force=False):
+    """Delete a JSON template from the database.
+    
+    Args:
+        template_id (int): ID of the template to delete
+        force (bool, optional): If True, delete even if template has instances
+            Default is False, which raises an error if template has instances
+            
+    Returns:
+        bool: True if deleted successfully
+        
+    Raises:
+        ValueError: If the template doesn't exist or has instances and force=False
+    """
+    from .models import JSONTemplate
+    session = _get_session()
+    
+    template = session.get(JSONTemplate, template_id)
+    if not template:
+        raise ValueError(f"Template with ID {template_id} not found")
+    
+    # Check if template has instances
+    if not force and template.instances:
+        raise ValueError(
+            f"Template {template.name} has {len(template.instances)} instances. "
+            f"Use force=True to delete anyway."
+        )
+    
+    # If force is True and template has instances, update them to no longer
+    # reference this template
+    if force and template.instances:
+        for instance in template.instances:
+            instance.template_id = None
+        session.commit()
+    
+    # Delete the template
+    session.delete(template)
+    session.commit()
+    return True
+
+def get_all_json_files():
+    """Get all JSON files from the database.
+    
+    Returns:
+        list: List of JSONFile objects from the database
+    """
+    from .models import JSONFile
+    session = _get_session()
+    return session.query(JSONFile).all()
+
+def find_orphaned_json_files():
+    """Find JSON files in the database that no longer exist on disk.
+    
+    Returns:
+        list: List of JSONFile objects that don't exist on disk
+    """
+    from .models import JSONFile
+    session = _get_session()
+    all_files = session.query(JSONFile).all()
+    
+    orphaned = []
+    for json_file in all_files:
+        if not os.path.exists(json_file.path) and (
+            json_file.archived_path is None or not os.path.exists(json_file.archived_path)
+        ):
+            orphaned.append(json_file)
+            
+    return orphaned
+
+def cleanup_orphaned_json_files(delete=False):
+    """Find and optionally delete orphaned JSON files from the database.
+    
+    Args:
+        delete (bool): If True, delete orphaned files from database
+            If False, just return the list without deleting
+            
+    Returns:
+        list: List of orphaned JSON file objects
+    """
+    orphaned = find_orphaned_json_files()
+    
+    if delete and orphaned:
+        session = _get_session()
+        for json_file in orphaned:
+            logger.info(f"Deleting orphaned JSON file: {json_file.name} (ID: {json_file.id})")
+            session.delete(json_file)
+        session.commit()
+    
+    return orphaned

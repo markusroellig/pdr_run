@@ -14,7 +14,7 @@ from pdr_run.database.queries import (
     get_or_create, retrieve_job_parameters, update_job_status
 )
 from pdr_run.io.file_manager import (
-    create_dir, copy_dir, move_files, make_tarfile
+    create_dir, copy_dir, move_files, make_tarfile, get_digest
 )
 from pdr_run.database.connection import get_session
 from pdr_run.database.models import (
@@ -149,23 +149,84 @@ def open_template(template_name):
     Returns:
         String containing the template content
     """
+    logger.info(f"Looking for template file: '{template_name}'")
+    logger.debug(f"Current working directory: {os.getcwd()}")
+    
+    # Keep track of all attempted paths for error reporting
+    attempted_paths = []
+    
     # Find the template in the PDR_INP_DIRS locations
     if isinstance(PDR_INP_DIRS, list):
         # Try all possible locations
+        logger.debug(f"Searching across {len(PDR_INP_DIRS)} potential template directories")
         for dir_path in PDR_INP_DIRS:
-            template_path = os.path.join(dir_path, "templates", template_name)
+            template_path = os.path.join(dir_path, template_name)
+            attempted_paths.append(template_path)
+            logger.debug(f"Trying path: {template_path}")
+            
             if os.path.exists(template_path):
-                with open(template_path, 'r') as f:
-                    return f.read()
+                logger.info(f"Template found at: {template_path}")
+                try:
+                    with open(template_path, 'r') as f:
+                        content = f.read()
+                        content_length = len(content)
+                        logger.debug(f"Successfully read template ({content_length} bytes)")
+                        return content
+                except (IOError, PermissionError) as e:
+                    logger.error(f"Error reading template file {template_path}: {str(e)}")
+                    logger.debug(f"File permissions: {oct(os.stat(template_path).st_mode)[-3:]}")
+            else:
+                # Check if parent directory exists
+                templates_dir = os.path.join(dir_path)
+                if os.path.exists(templates_dir):
+                    try:
+                        files = os.listdir(templates_dir)
+                        logger.debug(f"Directory {templates_dir} exists with {len(files)} files: {files[:5]}{' and more' if len(files) > 5 else ''}")
+                    except PermissionError:
+                        logger.warning(f"Cannot list contents of {templates_dir} (permission denied)")
+                else:
+                    logger.debug(f"Templates directory does not exist: {templates_dir}")
     else:
         # If it's a string, just try that path
-        template_path = os.path.join(PDR_INP_DIRS, "templates", template_name)
+        #template_path = os.path.join(PDR_INP_DIRS, "templates", template_name)
+        template_path = template_name
+        attempted_paths.append(template_path)
+        logger.debug(f"Trying single path: {template_path}")
+        
         if os.path.exists(template_path):
-            with open(template_path, 'r') as f:
-                return f.read()
+            logger.info(f"Template found at: {template_path}")
+            try:
+                with open(template_path, 'r') as f:
+                    content = f.read()
+                    content_length = len(content)
+                    logger.debug(f"Successfully read template ({content_length} bytes)")
+                    return content
+            except (IOError, PermissionError) as e:
+                logger.error(f"Error reading template file {template_path}: {str(e)}")
+                logger.debug(f"File permissions: {oct(os.stat(template_path).st_mode)[-3:]}")
+        else:
+            logger.debug(f"Template file not found at {template_path}")
+            # Check PDR_INP_DIRS directory structure
+            if os.path.exists(PDR_INP_DIRS):
+                try:
+                    dirs = os.listdir(PDR_INP_DIRS)
+                    logger.debug(f"PDR_INP_DIRS ({PDR_INP_DIRS}) contents: {dirs}")
+                    
+                    templates_dir = PDR_INP_DIRS
+                    if os.path.exists(templates_dir):
+                        files = os.listdir(templates_dir)
+                        logger.debug(f"Templates directory exists with {len(files)} files: {files[:5]}{' and more' if len(files) > 5 else ''}")
+                    else:
+                        logger.debug(f"Templates directory does not exist: {templates_dir}")
+                except PermissionError:
+                    logger.warning(f"Cannot list contents of {PDR_INP_DIRS} (permission denied)")
+            else:
+                logger.error(f"PDR_INP_DIRS path does not exist: {PDR_INP_DIRS}")
     
     # If we get here, we couldn't find the template
-    raise FileNotFoundError(f"Template file {template_name} not found in any template directory")
+    error_msg = f"Template file '{template_name}' not found in any template directory. Attempted paths: {attempted_paths}"
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
 
 def format_scientific(value):
     """Format a number in scientific notation.
@@ -175,14 +236,14 @@ def format_scientific(value):
         
     Returns:
         String representation in scientific notation or regular format
-    """
+"""
     if isinstance(value, (int, float)):
-        # For integers between 0 and 1000, use regular integer format
-        if value == int(value) and 0 <= value < 1000:
+        # For integers, use regular integer format
+        if isinstance(value, int):
             return str(int(value))
         
-        # For very large numbers (>= 1000) or very small numbers (< 0.1), use scientific notation
-        elif value >= 1000 or value < 0.1:
+        # For very large numbers or very small numbers, use scientific notation
+        elif abs(value) >= 1000 or abs(value) < 0.1:
             # Use Python's built-in scientific notation formatting
             return f"{value:.1e}"
         
@@ -249,17 +310,12 @@ def create_pdrnew_from_job_id(job_id, session=None, return_content=False):
     # Get the template content
     template_content = open_template("PDRNEW.INP.template")
     
-    # Transform parameters
-    param_dict = {
-        'xnsur': model_params.xnsur,
-        'mass': model_params.mass,
-        'rtot': model_params.rtot,
-        'species': model_params.species,
-        'grid': model_params.grid
-    }
+    # Transform parameters directly from model_params
+    transformed_params = transform(model_params.__dict__)
     
-    # Process the template with the transformed parameters
-    transformed_params = transform(param_dict)
+    # Filter out SQLAlchemy internal attributes
+    transformed_params = {k: v for k, v in transformed_params.items() 
+                         if not k.startswith('KT_VAR_sa_') and not k.startswith('KT_VAR__')}
     
     # Replace template placeholders with actual values
     output = template_content
@@ -286,6 +342,106 @@ def create_pdrnew_from_job_id(job_id, session=None, return_content=False):
     
     # Log that we created the file
     logger.info(f"Created PDRNEW.INP for job {job_id}")
+    
+    # Return content if requested
+    if return_content:
+        return output
+    
+    return None
+
+def create_json_from_job_id(job_id, session=None, return_content=False):
+    """Create a pdr_config.json input file for the KOSMA-tau PDR model from a database job ID.
+    
+    This function retrieves a PDR model job by its ID and generates a JSON config file
+    by replacing template placeholders with parameter values. The pdr_config.jsonP file is the
+    primary input file for the KOSMA-tau PDR code that defines all physical and numerical
+    parameters needed for the model simulation.
+    
+    The function performs several key steps:
+    1. Retrieves the job and associated parameter records from the database
+    2. Loads the pdr_config.json template file with placeholder variables
+    3. Extracts required parameters from the database record
+    4. Transforms parameter names to match template placeholders (adds KT_VAR prefix)
+    5. Handles special formatting for different parameter types:
+       - Species lists are expanded into multiple SPECIES lines
+       - Grid parameters are converted to "*MODEL GRID" flag if enabled
+       - Numerical values are formatted in appropriate scientific notation
+    6. Writes the processed template to a pdr_config.jsonP file in the current directory
+    
+    Args:
+        job_id (int): Database ID of the PDR model job to process
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created. Defaults to None.
+        return_content (bool, optional): Whether to return the generated file content
+            in addition to writing the file. Defaults to False.
+            
+    Returns:
+        str or None: If return_content is True, returns the complete content of the 
+            generated pdr_config.json file as a string. Otherwise returns None.
+            
+    Raises:
+        ValueError: If the job_id does not correspond to a valid PDR model job
+        FileNotFoundError: If the pdr_config.json.template file cannot be located
+        
+    Examples:
+        # Create pdr_config.json file for job ID 123
+        create_json_from_job_id(123)
+        
+        # Create file and get content
+        content = create_json_from_job_id(123, return_content=True)
+        
+    Notes:
+        - The function expects the current working directory to be the one where
+          the pdr_config.json file should be written
+        - The template file is searched for in the directories specified in PDR_INP_DIRS
+        - Template variables have the format KT_VARparameter_name_
+    """
+    if session is None:
+        session = get_session()
+    
+    job = session.get(PDRModelJob, job_id)
+    model_params = session.get(KOSMAtauParameters, job.kosmatau_parameters_id)
+    
+    # Get the template content
+    template_content = open_template("pdr_config.json.template")
+    
+    # Transform parameters directly from model_params
+    transformed_params = transform(model_params.__dict__)
+    
+    # Filter out SQLAlchemy internal attributes
+    transformed_params = {k: v for k, v in transformed_params.items() 
+                         if not k.startswith('KT_VAR_sa_') and not k.startswith('KT_VAR__')}
+    
+    # Replace template placeholders with actual values
+    output = template_content
+    for key, value in transformed_params.items():
+        if key == 'KT_VARspecies_':
+            # For JSON files, we need to format as a JSON array
+            species_list = value.split()
+            import json
+            species_json = json.dumps(species_list)
+            output = output.replace(key, species_json)
+        elif key == 'KT_VARgrid_':
+            if value:
+                output = output.replace(key, "*MODEL GRID")
+            else:
+                output = output.replace(key, "")
+        else:
+            # Format numbers in scientific notation
+            formatted_value = format_scientific(value)
+            output = output.replace(key, formatted_value)
+    
+    # Write the output file
+    output_path = "pdr_config.json"
+    with open(output_path, "w") as f:
+        f.write(output)
+    
+     # Register the JSON file in the database
+    from pdr_run.database.json_handlers import register_json_file
+    register_json_file(job_id=job_id, name="pdr_config.json", path=os.path.abspath(output_path))
+
+    # Log that we created the file
+    logger.info(f"Created pdr_config.json for job {job_id}")
     
     # Return content if requested
     if return_content:
@@ -401,6 +557,7 @@ def copy_pdroutput(job_id):
     chemchk_out_name = 'chemchk' + model + '.out'
     mrt_out_name = 'MCDRT' + model + '.tar.gz'
     pdrnew_inp_file_name = 'PDRNEW' + model + '.INP'
+    json_file_name = 'pdr_config' + model + '.json'
     ctrl_ind_file_name = 'CTRL_IND' + model
     
     # Copy output files to the model directory
@@ -453,6 +610,13 @@ def copy_pdroutput(job_id):
             os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
         )
         job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
+    
+    if os.path.exists('pdr_config.json'):
+        shutil.copyfile(
+            'pdr_config.json',
+            os.path.join(model_path, 'pdrgrid', json_file_name)
+        )
+        job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
     
     if os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
         shutil.copyfile(
@@ -549,51 +713,53 @@ def run_onion(spec, job_id, tmp_dir='./'):
     # hdf_name = job.output_hdf4_file
     # hdf5_name = job.output_hdf5_struct_file
     # now linking to the hdf files in the pdroutput directory
-    hdf_name = os.path.join(tmp_dir, 'pdroutput', 'pdrout.hdf')
+#    hdf_name = os.path.join(tmp_dir, 'pdroutput', 'pdrout.hdf')
     hdf5_name = os.path.join(tmp_dir, 'pdroutput', 'pdrstruct_s.hdf')
     
-    # Create symbolic link to HDF file
-    if os.path.exists(os.path.join(tmp_dir, 'pdrout.hdf')):
-        os.remove(os.path.join(tmp_dir, 'pdrout.hdf'))
-    
-    os.symlink(
-        hdf_name,
-        os.path.join(tmp_dir, 'pdrout.hdf')
-    )
+#    # Create symbolic link to HDF file
+#    if os.path.exists(os.path.join(tmp_dir, 'pdrout.hdf')):
+#        os.remove(os.path.join(tmp_dir, 'pdrout.hdf'))
+#    
+#    os.symlink(
+#        hdf_name,
+#        os.path.join(tmp_dir, 'pdrout.hdf')
+#    )
 
-   # Create symbolic link to HDF5 file
-    if os.path.exists(os.path.join(tmp_dir, 'pdrstruct_s.hdf5')):
-        os.remove(os.path.join(tmp_dir, 'pdrstruct_s.hdf5'))
-    
-    os.symlink(
-        hdf5_name,
-        os.path.join(tmp_dir, 'pdrstruct_s.hdf5')
-    )
+#   # Create symbolic link to HDF5 file
+#    if os.path.exists(os.path.join(tmp_dir, 'pdrstruct_s.hdf5')):
+#        os.remove(os.path.join(tmp_dir, 'pdrstruct_s.hdf5'))
+#    
+#    os.symlink(
+#        hdf5_name,
+#        os.path.join(tmp_dir, 'pdrstruct_s.hdf5')
+#    )
     
     
     # Create CTRL_IND file if it doesn't exist
-    if not os.path.exists(os.path.join(tmp_dir, 'CTRL_IND')):
-        p = subprocess.call(
-            ['getctrlind', 'pdrout.hdf'],
-            stdout=open(os.path.join('onionoutput', 'TEXTOUT'), 'w'),
-            stderr=subprocess.STDOUT,
-            shell=True
-        )
-        
-        if p == 0:
-            logger.info("CTRL_IND created without problems")
-        else:
-            logger.error(f"Couldn't create CTRL_IND, subprocess.call returns: {p}")
+#    if not os.path.exists(os.path.join(tmp_dir, 'CTRL_IND')):
+#        p = subprocess.call(
+#            ['getctrlind', 'pdrout.hdf'],
+#            stdout=open(os.path.join('onionoutput', 'TEXTOUT'), 'w'),
+#            stderr=subprocess.STDOUT,
+#            shell=True
+#        )
+#        
+#        if p == 0:
+#            logger.info("CTRL_IND created without problems")
+#        else:
+#            logger.error(f"Couldn't create CTRL_IND, subprocess.call returns: {p}")
     
     # Run onion model
     with open(os.path.join('onionoutput', 'TEXTOUT'), 'w') as textout:
         logger.info(f"Running onion for {spec}")
         print(f"Running onion for {spec}", file=textout)
-        print("Getting the CTRL_IND file", file=textout)
+        #print("Getting the CTRL_IND file", file=textout)
         
-        onion_code = './onionexe'
+        onion_code = './' + PDR_CONFIG['onion_file_name']
+        logger.info(f"Running onion code {onion_code}")
         try:
-            os.system(f"{onion_code} pdrout.hdf >> {textout.name} 2>> {textout.name}")
+            #os.system(f"{onion_code} pdrout.hdf >> {textout.name} 2>> {textout.name}")
+            os.system(f"{onion_code} {hdf5_name} >> {textout.name} 2>> {textout.name}")
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             raise
@@ -642,12 +808,13 @@ def copy_onionoutput(spec, job_id):
     
     logger.info(f"Copied onion output for species {spec}")
 
-def run_kosma_tau(job_id, tmp_dir='./'):
+def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
     """Run the KOSMA-tau model workflow for a job.
     
     Args:
         job_id (int): Job ID
         tmp_dir (str): Temporary directory path
+        force_onion (bool): If True, run onion even if PDR model was skipped
     """
     logger.info(f"Running KOSMA-tau model for job {job_id}")
     
@@ -668,6 +835,12 @@ def run_kosma_tau(job_id, tmp_dir='./'):
     
     # Create PDRNEW.INP
     create_pdrnew_from_job_id(job_id, session)
+
+    # Create pdr_json.config
+    create_json_from_job_id(job_id, session)
+    
+    # Flag to track if PDR execution was skipped
+    pdr_skipped = False
     
     # Check if model already exists
     hdf_storage_dir = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
@@ -680,29 +853,34 @@ def run_kosma_tau(job_id, tmp_dir='./'):
         job = session.query(PDRModelJob).get(job_id)
         shutil.copyfile(job.output_ctrl_ind_file, 'CTRL_IND')
         update_job_status(job_id, 'skipped', session)
+        pdr_skipped = True
     else:
         logger.info(f"Model doesn't exist, executing PDR code")
         
         # Run PDR model
         run_pdr(job_id, tmp_dir)
-        
     
-    # Run onion for each species
-    species = string_to_list(job.onion_species)
-    for spec in species:
-        logger.info(f"Processing species: {spec}")
-        
-        # Set up onion directory
-        set_oniondir(spec)
-        
-        # Run onion model
-        run_onion(spec, job_id, tmp_dir)
-        
-        # Copy output files
-        copy_onionoutput(spec, job_id)
+    # Run onion for each species if PDR was not skipped or force_onion is True
+    if not pdr_skipped or force_onion:
+        species = string_to_list(job.onion_species)
+        for spec in species:
+            logger.info(f"Processing species: {spec}")
+            
+            # Set up onion directory
+            set_oniondir(spec)
+            
+            # Run onion model
+            run_onion(spec, job_id, tmp_dir)
+            
+            # Copy output files
+            copy_onionoutput(spec, job_id)
+    else:
+        logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
     
-    # Copy output files  moved after the onion run because ONION modifies the HDF5 file
-    copy_pdroutput(job_id)
+    # Copy output files - moved after the onion run because ONION modifies the HDF5 file
+    # Only copy if we actually ran the PDR model
+    if not pdr_skipped:
+        copy_pdroutput(job_id)
     
     logger.info(f"Completed KOSMA-tau model run for job {job_id}")
 
@@ -731,6 +909,7 @@ def update_db_pdr_output_entries(job_id, session=None):
     chemchk_out_name = 'chemchk' + model + '.out'
     mrt_out_name = 'MCDRT' + model + '.tar.gz'
     pdrnew_inp_file_name = 'PDRNEW' + model + '.INP'
+    json_file_name = 'pdr_config' + model + '.json'
     ctrl_ind_file_name = 'CTRL_IND' + model
     
     # Update job file paths
@@ -755,6 +934,9 @@ def update_db_pdr_output_entries(job_id, session=None):
     
     if os.path.exists(os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)):
         job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
+
+    if os.path.exists(os.path.join(model_path, 'pdrgrid', json_file_name)):
+        job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
     
     if os.path.exists(os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)):
         job.output_ctrl_ind_file = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
@@ -802,3 +984,52 @@ def update_db_pdr_output_entries(job_id, session=None):
         )
     else:
         logger.info(f'HDF file entry already exists. ID: {instance.id}')
+
+
+def replace_template_variables(template_content, parameters):
+    """Replace variables in template with parameter values.
+    
+    Args:
+        template_content: Template content string
+        parameters: Dictionary of parameters
+        
+    Returns:
+        String with replaced variables
+    """
+    logger.info(f"Replacing template variables with {len(parameters)} parameters")
+    result = template_content
+    
+    for var_name, var_value in parameters.items():
+        placeholder = f"KT_VAR{var_name}_"
+        if placeholder in result:
+            # Format the value based on its type
+            if isinstance(var_value, int):
+                # Format integers without decimal point or scientific notation
+                formatted_value = str(var_value)
+                logger.debug(f"Replacing {placeholder} with integer value: {formatted_value}")
+            elif isinstance(var_value, float):
+                # Format floats with scientific notation
+                formatted_value = f"{var_value:.4e}"
+                logger.debug(f"Replacing {placeholder} with float value: {formatted_value}")
+            else:
+                # Convert other types to string
+                formatted_value = str(var_value)
+                logger.debug(f"Replacing {placeholder} with string value: {formatted_value}")
+                
+            # Perform the replacement
+            result = result.replace(placeholder, formatted_value)
+            
+    # Check for any unreplaced variables (debugging)
+    unreplaced = []
+    for line in result.split('\n'):
+        if "KT_VAR" in line:
+            unreplaced.append(line.strip())
+    
+    if unreplaced:
+        logger.warning(f"Found {len(unreplaced)} unreplaced template variables:")
+        for line in unreplaced[:5]:  # Only log the first 5 unreplaced variables
+            logger.warning(f"  {line}")
+        if len(unreplaced) > 5:
+            logger.warning(f"  ...and {len(unreplaced) - 5} more")
+            
+    return result

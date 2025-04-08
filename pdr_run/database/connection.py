@@ -103,9 +103,14 @@ def get_session():
     
     if _SESSION_FACTORY is None:
         # Initialize with default settings
+        logger.info("Initializing new database connection")
         init_db()
+    else:
+        logger.debug("Using existing database connection")
     
-    return _SESSION_FACTORY()
+    session = _SESSION_FACTORY()
+    logger.debug(f"Created new database session: {id(session)}")
+    return session
 
 def get_engine():
     """Get SQLAlchemy engine."""

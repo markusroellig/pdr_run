@@ -17,7 +17,7 @@ from pdr_run.database.connection import (
 
 logger = logging.getLogger("dev")
 
-def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None):
+def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None, force_onion=False):
     """Run KOSMA-tau PDR model with JSON parameter file.
     
     Args:
@@ -25,6 +25,7 @@ def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None):
         template_id: Optional template ID to use as base
         parameters: Dictionary of parameters to substitute in the template
         tmp_dir: Temporary directory for job execution
+        force_onion: If True, run onion even if PDR model was skipped
         
     Returns:
         bool: True if successful, False otherwise
@@ -105,8 +106,19 @@ def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None):
         pass
     
   
-def run_kosma_tau_with_json(job_id, template_id=None, parameters=None, tmp_dir='./'):
-    """Run KOSMA-tau with JSON parameters while maintaining compatibility with existing workflow."""
+def run_kosma_tau_with_json(job_id, template_id=None, parameters=None, tmp_dir='./', force_onion=False):
+    """Run KOSMA-tau with JSON parameters while maintaining compatibility with existing workflow.
+    
+    Args:
+        job_id: ID of the PDRModelJob
+        template_id: Optional template ID to use as base
+        parameters: Dictionary of parameters to substitute in the template
+        tmp_dir: Temporary directory for job execution
+        force_onion: If True, run onion even if PDR model was skipped
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     from pdr_run.database.connection import prepare_job_json, archive_job_json
     
     # Prepare JSON file if needed
@@ -114,8 +126,8 @@ def run_kosma_tau_with_json(job_id, template_id=None, parameters=None, tmp_dir='
     if template_id or parameters:
         json_path = prepare_job_json(job_id, template_id, parameters, tmp_dir)
     
-    # Run the standard KOSMA-tau workflow
-    run_kosma_tau(job_id, tmp_dir)
+    # Run the standard KOSMA-tau workflow with force_onion parameter
+    run_kosma_tau(job_id, tmp_dir=tmp_dir, force_onion=force_onion)
     
     # Archive JSON results if relevant
     if json_path and os.path.exists(os.path.join(tmp_dir, "output.json")):
@@ -123,5 +135,6 @@ def run_kosma_tau_with_json(job_id, template_id=None, parameters=None, tmp_dir='
         job = session.get(PDRModelJob, job_id)
         archive_dir = os.path.join(job.model_name.model_path, "json")
         archived_path = archive_job_json(job_id, os.path.join(tmp_dir, "output.json"), archive_dir)
-
         
+    return True
+

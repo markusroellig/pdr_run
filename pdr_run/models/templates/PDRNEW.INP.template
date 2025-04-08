@@ -66,7 +66,7 @@ KT_VARh2_h_coll_rates_
 H2 ro vib excitation:  H - H2 use reactive collisions [0=no, 1=yes]  h2_h_coll_rates
 KT_VARh2_h_reactive_colls_
 H2 ro vib collisions: use g-bar approximation by Shaw et al 2005 [0=no, 1=yes] h2_use_gbar
-KT_VARh2_use_gbar__
+KT_VARh2_use_gbar_
 H2 ro vib excitation:  H2 quadrupole transition A values (0: Turner, J. et al. 1977, 1: Wolniewicz, L. et al.  1998)
 KT_VARh2_quad_a_
 IFH2DES: allow for H2 formation induced desorption (0=no, 1=yes)
@@ -94,6 +94,12 @@ Method of T solution (0: legacy, 1: Brent, 2: hybrid, 3: AMRSEARCH): ITMETH
 KT_VARitmeth_
 Method of solving the chemical network (0=simple/DGESV, 1=advanced/DGESVX, 2=DSGESV):ICHEMETH
 KT_VARichemeth_
+Newton stepper specifications  INEWTONSTEP (0:legacy, 1:adaptive1, 2:symlogtanh  with omega_neg,omega_pos, lambda)
+KT_VARinewtonstep_
+Newton stepping parameters for INEWTONSTEP=2 ( omega_neg, omega_pos, lambda)
+KT_VARomega_neg_
+KT_VARomega_pos_
+KT_VARlambda_newt_
 Apply elemental conservation equations (0=false, 1=true) use_conservation
 KT_VARuse_conservation_
 Preconditioning of Jacobian and RHS vector F (0=false, 1=true) rescaleQF

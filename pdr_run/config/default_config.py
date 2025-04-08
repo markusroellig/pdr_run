@@ -70,7 +70,7 @@ DATABASE_CONFIG = {
     'type': 'sqlite',              # 'sqlite' or 'mysql'
     'location': 'local',           # 'local' or 'remote'
     #'path': '/home/roellig/pdr/pdr/kosma-tau-models.db',  # For SQLite
-    'path': '/home/roellig/pdr/pdr/test_run/example.db',
+    'path': './example.db',
     'host': 'mysql.rrz.uni-koeln.de',  # For MySQL
     'port': 3306,                  # For MySQL
     'database': 'kosma_tau',       # For MySQL
@@ -94,14 +94,15 @@ STORAGE_CONFIG = {
 
 # PDR model configuration
 PDR_CONFIG = {
-    'base_dir': '/tmp/pdr_test',  # Use a temporary directory for tests
+    'model_name': 'test1',
+    'base_dir': '/home/roellig/pdr/pdr/test_run',  # Use a temporary directory for tests
     'pdr_file_name': 'mockpdr',
     'onion_file_name': 'mockonion',
-    'getctrlind_file_name': 'getctrlind',
+    'getctrlind_file_name': 'mockgetctrlind',
     'mrt_file_name': 'mockmrt',
     'pdrinp_template_file': 'PDRNEW.INP.template',
     'json_template_file': 'pdr_config.json.template',
-    'chem_database': 'chem_rates.dat',
+    'chem_database': 'chem_rates_2022-10-21-ERS.dat',
     'chem_origin': 'UDfA12',
     'exe_revision': 'dev',
     'compilation_date': '2099-01-01',
@@ -127,13 +128,15 @@ USER_CONFIG = {
 # Default model parameters
 DEFAULT_PARAMETERS = {
     'metal': ["100"],    # Metallicity relative to solar
-    'dens': ["30","40"],     # Log density (cm^-3)
-    'mass': ["00"],     # Log mass (solar masses)
-    'chi': ["00"],      # Log UV field strength
-    'col': ["00"],     # Column density (cm^-2)
+    'dens': ["30"],     # Log density (cm^-3)
+    'mass': ["-10"],     # Log mass (solar masses)
+    'chi': ["10"],      # Log UV field strength
+    #'col': ["00"],     # Column density (cm^-2)
     'species':  ["CO","C+", "C", "O", "13C+", "13C", "13CO", "OH", "CH+", "HCO+", "H13CO+"],  # Species to compute radiative transfer
-    'alpha': ["1.0"],    # Cloud density profile parameter
-    'rcore': ["0.2"],    # Core radius parametergrep
+    #'alpha': ["1.5"],    # Cloud density profile parameter
+    #'rcore': ["0.2"],    # Core radius parametergrep
+    'alpha' : 1.5,
+    'rcore' : 0.2,
     'default_species' :  "H+ H2+ H3+ HE+ HE C CH C+ CH+ CH2+ CH2 CH3+ CH3 CH4+ CH4 CH5+ "\
                   +" "+" CN CN+ HCN HCN+ CO CO+ HCO+ HCO CO2 CO2+ H2CO H2CO+ 13C 13CH 13CO 13C+ 13CH+ 13CH2+ "\
                   +" "+" 13CO+ H13CO+ N N2 N2+ N2H+ NO NO+ O O+ OH OH+ H2O H2O+ H3O+ O2 O2+ "\
@@ -160,20 +163,22 @@ DEFAULT_PARAMETERS = {
 non_default_parameters={"ihtclgas":1, "tgasc":50.,
                         "ihtcldust":1, "tdustc":20,
                         "idustmet":1,
-                        "ih2meth":0, "cosray":5.0e-17,
-                        "alpha":0.0, "beta":1.0000e5,
+                        "ih2meth":0, "cosray":1.0e-16,
+                        "beta":1.0000e5,
+                        "ifuvtype":2, 
                         "ifuvmeth":1, "inewgam":0,
-                        "ipehmeth":0, "inds":2,
-                        "indstr":0, "ih2shld":0,
-                        "indxpeh":14, "indx":7,
-                        "ih2onpah":0, "step1":300,
+                        "ipehmeth":1, "inds":4,
+                        "indstr":1, "ih2shld":0,
+                        "indxpeh":4, "indx":7,
+                        "ih2onpah":0, "step1":100,
                         "step2":200, "nconv_time":0,
+                        "temp_start":0.0,
                         "atol_chem":1.0e-10,
                         "h2_structure":0,
-                        "itmeth":0, 
-                        "rtol_iter":1.0e-2}
+                        "itmeth":2, 
+                        "rtol_iter":3.0e-2}
 
 # Input and output directories
 
 PDR_OUT_DIRS=['pdroutput','onionoutput','Out']
-PDR_INP_DIRS=['pdrinpdata','onioninpdata','In']
+PDR_INP_DIRS=['pdrinpdata','onioninpdata','In','templates']

@@ -1,6 +1,7 @@
 """File management utilities for the PDR framework."""
 
 import os
+import time
 import shutil
 import tarfile
 import hashlib
@@ -18,6 +19,7 @@ def create_dir(path):
     Args:
         path (str): Directory path
     """
+    logger.debug(f"Creating directory: {os.path.abspath(path)}")
     try:
         os.makedirs(path)
         logger.info(f"Successfully created the directory {path}")
@@ -72,14 +74,33 @@ def get_digest(file_path):
     Returns:
         str: SHA-256 hash
     """
-    h = hashlib.sha256()
-    with open(file_path, 'rb') as file:
-        while True:
-            chunk = file.read(h.block_size)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+    if not os.path.exists(file_path):
+        logger.error(f"Cannot calculate digest: File not found at {file_path}")
+        return "file_not_found"
+        
+    try:
+        file_size = os.path.getsize(file_path)
+        logger.debug(f"Calculating SHA-256 hash of file: {file_path} (size: {file_size/1024:.2f} KB)")
+        
+        start_time = time.time()
+        h = hashlib.sha256()
+        read_bytes = 0
+        
+        with open(file_path, 'rb') as file:
+            while True:
+                chunk = file.read(h.block_size)
+                if not chunk:
+                    break
+                read_bytes += len(chunk)
+                h.update(chunk)
+                
+        digest = h.hexdigest()
+        duration = time.time() - start_time
+        logger.debug(f"SHA-256 digest calculated: {digest[:8]}...{digest[-8:]} ({read_bytes} bytes processed in {duration:.3f}s)")
+        return digest
+    except Exception as e:
+        logger.error(f"Error calculating digest of {file_path}: {str(e)}", exc_info=True)
+        return "error_calculating_digest"
 
 def get_code_revision(exe_path):
     """Get the revision information from an executable.
@@ -94,44 +115,155 @@ def get_code_revision(exe_path):
     Returns:
         str: The revision identifier or a default value
     """
+    if not os.path.exists(exe_path):
+        logger.error(f"Cannot get revision: Executable not found at {exe_path}")
+        logger.debug(f"Current directory: {os.getcwd()}")
+        logger.debug(f"Executable directory exists: {os.path.exists(os.path.dirname(exe_path))}")
+        return "executable_not_found"
+        
     try:
-        out = subprocess.check_output([exe_path, "--version"]).decode("utf-8")
+        logger.debug(f"Getting code revision for: {exe_path}")
+        start_time = time.time()
+        
+        cmd = [exe_path, "--version"]
+        logger.debug(f"Executing command: {' '.join(cmd)}")
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        duration = time.time() - start_time
+        
+        if result.returncode != 0:
+            logger.warning(f"Command {cmd} exited with non-zero code: {result.returncode}")
+            if result.stderr:
+                logger.debug(f"Command stderr: {result.stderr}")
+            return "error_getting_revision"
+            
+        out = result.stdout
+        logger.debug(f"Command completed in {duration:.3f}s with {len(out)} bytes output")
+        logger.debug(f"Version output: {out.strip()}")
         
         # First approach: Look for a line containing "Revision:"
         for line in out.split("\n"):
             if "revision:" in line.lower():
-                # Extract the part after the colon and strip whitespace
-                return line.split(":", 1)[1].strip()
+                revision = line.split(":", 1)[1].strip()
+                logger.debug(f"Found revision marker, extracted: '{revision}'")
+                return revision
         
         # Second approach: Look for the word "revision" anywhere
         if "revision" in out.lower():
-            # Original method
             revision_part = out.strip().split("revision")[1].strip()
-            # Just take the first word to avoid trailing text
-            return revision_part.split()[0]
+            revision = revision_part.split()[0]
+            logger.debug(f"Found 'revision' keyword, extracted: '{revision}'")
+            return revision
             
-        # Third approach: Second-to-last line, last word (previously used method)
+        # Third approach: Second-to-last line, last word
         if len(out.split("\n")) > 1:
-            return out.split("\n")[-2].split()[-1]
-            
+            out_lines = out.split("\n")
+            revision = out_lines[-2].split()[-1]
+            logger.debug(f"Used fallback method (second-to-last line), extracted: '{revision}'")
+            return revision
+        
+        logger.warning(f"Could not extract revision using standard methods from: {out}")
         return "unknown_revision"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        logger.warning(f"Could not get revision for {exe_path}. Using default value.")
+    except subprocess.TimeoutExpired:
+        logger.error(f"Command timed out after 10s: {exe_path} --version")
+        return "command_timeout"
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        logger.warning(f"Could not get revision for {exe_path}: {str(e)}")
+        logger.debug(f"Exception details:", exc_info=True)
         return "test_revision"
 
 def get_compilation_date(exe_path):
     """Get compilation date from executable.
     
+    Tries to extract the compilation date from the executable's version output.
+    Returns a default date if extraction fails.
+    
     Args:
         exe_path (str): Executable path
         
     Returns:
-        datetime: Compilation date
+        datetime: Compilation date or default date if extraction fails
     """
     import datetime
-    out = subprocess.check_output([exe_path, "--version"]).decode("utf-8")
-    strg = list(filter(None, out.split("\n")))[-1].lstrip(' Binary compiled the ')
-    return datetime.datetime.strptime(strg, '%b %d %Y at %X')
+    
+    # Default date if extraction fails (Jan 1, 2000)
+    default_date = datetime.datetime(2000, 1, 1)
+    
+    if not os.path.exists(exe_path):
+        logger.error(f"Cannot get compilation date: Executable not found at {exe_path}")
+        return default_date
+        
+    try:
+        logger.debug(f"Getting compilation date for: {exe_path}")
+        start_time = time.time()
+        
+        cmd = [exe_path, "--version"]
+        logger.debug(f"Executing command: {' '.join(cmd)}")
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        duration = time.time() - start_time
+        
+        if result.returncode != 0:
+            logger.warning(f"Command {cmd} exited with non-zero code: {result.returncode}")
+            return default_date
+            
+        out = result.stdout
+        logger.debug(f"Command completed in {duration:.3f}s with {len(out)} bytes output")
+        logger.debug(f"Version output: {out.strip()}")
+        
+        # Extract the compilation date line
+        lines = list(filter(None, out.split("\n")))
+        if not lines:
+            logger.warning("No output lines found from version command")
+            return default_date
+            
+        date_line = lines[-1]
+        logger.debug(f"Attempting to parse date from: '{date_line}'")
+        
+        # Try to find the compilation date indicator
+        if "compiled the " in date_line.lower():
+            date_part = date_line.split("compiled the ", 1)[1].strip()
+            logger.debug(f"Extracted date string: '{date_part}'")
+            
+            # Try to parse with expected format
+            try:
+                compile_date = datetime.datetime.strptime(date_part, '%b %d %Y at %X')
+                logger.debug(f"Parsed compilation date: {compile_date}")
+                return compile_date
+            except ValueError as e:
+                logger.warning(f"Failed to parse date string '{date_part}': {e}")
+                
+        # Alternative date formats if the first attempt fails
+        date_formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%d %b %Y %H:%M:%S',
+            '%B %d, %Y',
+            '%d.%m.%Y %H:%M:%S'
+        ]
+        
+        for date_format in date_formats:
+            try:
+                # Try to find a date anywhere in the string
+                for word in date_line.split():
+                    if len(word) >= 8:  # Most date formats have at least 8 chars
+                        try:
+                            compile_date = datetime.datetime.strptime(word, date_format)
+                            logger.debug(f"Found date using format '{date_format}': {compile_date}")
+                            return compile_date
+                        except ValueError:
+                            pass
+            except Exception:
+                pass
+                
+        logger.warning(f"Could not extract compilation date from: {out}")
+        return default_date
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Command timed out after 10s: {exe_path} --version")
+        return default_date
+    except Exception as e:
+        logger.error(f"Error getting compilation date for {exe_path}: {str(e)}", exc_info=True)
+        return default_date
 
 def create_temp_dir(prefix='pdr-'):
     """Create a temporary directory.
