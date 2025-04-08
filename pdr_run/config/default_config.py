@@ -85,6 +85,7 @@ STORAGE_CONFIG = {
     'type': 'local',                # 'local', 'rclone', 'sftp', 'ftp'
     'base_dir': '/home/roellig/pdr/pdr/test_run',
     'rclone_remote': 'kosmatau',    # Rclone remote name if using rclone
+    'use_mount': False,             # Set to True if you want to use mount functionality 
     'host': None,                   # For SFTP/FTP
     'port': None,                   # For SFTP/FTP
     'username': None,               # For SFTP/FTP

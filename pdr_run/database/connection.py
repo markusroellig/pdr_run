@@ -69,19 +69,44 @@ def init_db(config=None):
     
     # Default to SQLite in-memory database if no config
     if config is None:
-        connection_string = 'sqlite:///kosma_tau.db'
-    elif isinstance(config, str):
+        # Import from default_config
+        from pdr_run.config.default_config import DATABASE_CONFIG
+        config = DATABASE_CONFIG
+        
+    if isinstance(config, str):
         connection_string = config
     else:
         db_type = config.get('type', 'sqlite')
         if db_type == 'sqlite':
             connection_string = f"sqlite:///{config.get('path', 'kosma_tau.db')}"
+        elif db_type == 'mysql':
+            # Format MySQL connection string
+            user = config.get('username', '')
+            password = config.get('password', '')
+            host = config.get('host', 'localhost')
+            port = config.get('port', 3306)
+            database = config.get('database', 'kosma_tau')
+            
+            # Build the MySQL connection string
+            connection_string = (
+                f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
+            )
+            
+            logger.info(f"Using MySQL connection to {host}:{port}/{database}")
         else:
             # Handle other database types
             raise ValueError(f"Unsupported database type: {db_type}")
     
-    # Create engine
-    _ENGINE = create_engine(connection_string)
+    # Create engine with appropriate connection parameters
+    connect_args = {}
+    if 'pool_recycle' in config:
+        connect_args['pool_recycle'] = config.get('pool_recycle')
+    
+    _ENGINE = create_engine(
+        connection_string, 
+        connect_args=connect_args,
+        pool_pre_ping=config.get('pool_pre_ping', False)
+    )
     
     # Create session factory
     _SESSION_FACTORY = scoped_session(sessionmaker(bind=_ENGINE))
@@ -93,7 +118,7 @@ def init_db(config=None):
     from .models import Base
     Base.metadata.create_all(_ENGINE)
     
-    logger.info(f"Database initialized: {connection_string}")
+    logger.info(f"Database initialized: {connection_string.split('@')[-1]}")  # Log without credentials
     
     return session, _ENGINE
 
