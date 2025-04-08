@@ -99,14 +99,16 @@ def init_db(config=None):
     
     # Create engine with appropriate connection parameters
     connect_args = {}
+    engine_kwargs = {
+        'connect_args': connect_args,
+        'pool_pre_ping': config.get('pool_pre_ping', False)
+    }
+
+    # Add pool_recycle if specified
     if 'pool_recycle' in config:
-        connect_args['pool_recycle'] = config.get('pool_recycle')
-    
-    _ENGINE = create_engine(
-        connection_string, 
-        connect_args=connect_args,
-        pool_pre_ping=config.get('pool_pre_ping', False)
-    )
+        engine_kwargs['pool_recycle'] = config.get('pool_recycle')
+
+    _ENGINE = create_engine(connection_string, **engine_kwargs)
     
     # Create session factory
     _SESSION_FACTORY = scoped_session(sessionmaker(bind=_ENGINE))
