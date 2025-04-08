@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# mock_long_run.sh - Simulates a longer program execution
+# Usage: ./mock_long_run.sh [total_seconds] [step_seconds]
+
+
+VERSION="1.2.3"
+
+# Handle version flag
+if [[ "$1" == "--version" ]]; then
+    echo "--------------"
+    echo "mock_long_run.sh Revision: $VERSION"
+    echo "Binary compiled the Feb 11 2025 at 11:01:00"
+    exit 0
+fi
+
+
+# Default values
+TOTAL_SECONDS=${1:-10}    # Total runtime in seconds (default: 60)
+STEP_SECONDS=${2:-2}      # Update interval in seconds (default: 5)
+
+echo "Starting mock PDR program run (${TOTAL_SECONDS} seconds total)..."
+echo "-------------------------------------------------------"
+
+# Calculate number of steps
+STEPS=$((TOTAL_SECONDS / STEP_SECONDS))
+
+for ((i=1; i<=STEPS; i++)); do
+    # Calculate progress percentage
+    PROGRESS=$((i * 100 / STEPS))
+    
+    # Generate a random "processing" message
+    MESSAGES=(
+        "Processing data batch $i/$STEPS..."
+        "Analyzing module components..."
+        "Optimizing system parameters..."
+        "Performing calculations..."
+        "Running background tasks..."
+        "Collecting metrics..."
+        "Validating results..."
+    )
+    RANDOM_INDEX=$((RANDOM % ${#MESSAGES[@]}))
+    MESSAGE=${MESSAGES[$RANDOM_INDEX]}
+    
+    # Print progress
+    echo "[$(date +%H:%M:%S)] $MESSAGE"
+    echo -ne "Progress: [$PROGRESS%] ["
+    
+    # Print progress bar
+    BAR_WIDTH=50
+    COMPLETED=$((BAR_WIDTH * PROGRESS / 100))
+    for ((j=0; j<BAR_WIDTH; j++)); do
+        if ((j < COMPLETED)); then
+            echo -ne "#"
+        else
+            echo -ne " "
+        fi
+    done
+    echo -e "]\r"
+    
+    # Wait for the specified interval
+    sleep $STEP_SECONDS
+done
+
+touch pdroutput/pdrstruct_s.hdf5 pdroutput/pdrchem_c.hdf5 pdroutput/pdrout.hdf pdroutput/TEXTOUT pdroutput/CTRL_IND
+touch Out/mock.out
+touch onionoutput/jerg_CO.smli
+
+echo -e "\n-------------------------------------------------------"
+echo "Process completed successfully!"
+echo "Total execution time: ${TOTAL_SECONDS} seconds"
+
+exit 0
