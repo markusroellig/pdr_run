@@ -6,6 +6,7 @@ setup(
     packages=find_packages(),  # Explicitly include packages
     install_requires=[
         "sqlalchemy",
+        "mysql-connector-python",
         "numpy",
         "requests",
         "paramiko",

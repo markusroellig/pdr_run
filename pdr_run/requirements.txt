@@ -1,4 +1,5 @@
 sqlalchemy
+mysql-connector-python
 numpy
 requests
 paramiko
