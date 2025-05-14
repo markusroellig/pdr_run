@@ -210,6 +210,11 @@ def configure_from_args(args):
     if hasattr(args, 'db_password') and args.db_password:
         os.environ['PDR_DB_PASSWORD'] = args.db_password
     
+    # Update config from environment variables
+    db_password_env = os.environ.get('PDR_DB_PASSWORD')
+    if db_password_env:
+        config['database']['password'] = db_password_env
+    
     # Return config dict for compatibility
     return {}
 
@@ -369,6 +374,14 @@ def main():
         )
         logger.info("Dry run completed, exiting without running models")
         return
+    
+    # Ensure DB password is set from environment if present
+    db_password_env = os.environ.get('PDR_DB_PASSWORD')
+    if db_password_env:
+        if hasattr(args, 'db_password'):
+            args.db_password = db_password_env
+        if 'database' in config:
+            config['database']['password'] = db_password_env
     
     # Execute models
     try:

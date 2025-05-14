@@ -75,7 +75,7 @@ DATABASE_CONFIG = {
     'port': 3306,                  # For MySQL
     'database': 'kosma_tau',       # For MySQL
     'username': None,              # For MySQL
-    'password': None,              # For MySQL
+    'password': None,              # Set via PDR_DB_PASSWORD environment variable if needed
     'pool_recycle': 280,           # Prevent connection timeout
     'pool_pre_ping': True,         # Check connection health
 }

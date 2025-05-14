@@ -61,6 +61,23 @@ logger = logging.getLogger("dev")
 _ENGINE = None
 _SESSION_FACTORY = None
 
+def get_db_uri(config):
+    """Construct the database URI from the configuration."""
+    db_type = config.get('type', 'sqlite')
+    if db_type == 'sqlite':
+        return f"sqlite:///{config.get('path', 'kosma_tau.db')}"
+    elif db_type == 'mysql':
+        user = config.get('username', '')
+        password = config.get('password')
+        if password is None:
+            password = ''
+        host = config.get('host', 'localhost')
+        port = config.get('port', 3306)
+        database = config.get('database', 'kosma_tau')
+        return f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
+    else:
+        raise ValueError(f"Unsupported database type: {db_type}")
+
 def init_db(config=None):
     """Initialize database connection."""
     global _ENGINE, _SESSION_FACTORY
@@ -76,26 +93,9 @@ def init_db(config=None):
     if isinstance(config, str):
         connection_string = config
     else:
-        db_type = config.get('type', 'sqlite')
-        if db_type == 'sqlite':
-            connection_string = f"sqlite:///{config.get('path', 'kosma_tau.db')}"
-        elif db_type == 'mysql':
-            # Format MySQL connection string
-            user = config.get('username', '')
-            password = config.get('password', '')
-            host = config.get('host', 'localhost')
-            port = config.get('port', 3306)
-            database = config.get('database', 'kosma_tau')
-            
-            # Build the MySQL connection string
-            connection_string = (
-                f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
-            )
-            
-            logger.info(f"Using MySQL connection to {host}:{port}/{database}")
-        else:
-            # Handle other database types
-            raise ValueError(f"Unsupported database type: {db_type}")
+        connection_string = get_db_uri(config)
+        if config.get('type', 'sqlite') == 'mysql':
+            logger.info(f"Using MySQL connection to {config.get('host', 'localhost')}:{config.get('port', 3306)}/{config.get('database', 'kosma_tau')}")
     
     # Create engine with appropriate connection parameters
     connect_args = {}
