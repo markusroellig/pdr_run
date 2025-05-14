@@ -44,6 +44,7 @@ Parameters:
     --species: Chemical species to include in the model
     --random: Generate random parameter sets instead of grid
     --force-onion: Force running onion even if PDR model was skipped
+    --json-template: Path to a JSON parameter template file to use for this run
 
 Environment Variables:
     PDR_STORAGE_TYPE: Storage backend type
@@ -153,6 +154,12 @@ def parse_arguments():
         '--random',
         action='store_true',
         help='Generate random parameter sets'
+    )
+    
+    parser.add_argument(
+        '--json-template',
+        type=str,
+        help='Path to a JSON parameter template file to use for this run'
     )
     
     return parser.parse_args()
@@ -378,7 +385,8 @@ def main():
                 params=params, 
                 model_name=args.model_name, 
                 config=config,
-                force_onion=args.force_onion
+                force_onion=args.force_onion,
+                json_template=args.json_template
             )
             logger.info(f"Completed job {job_id}")
         else:
@@ -407,7 +415,8 @@ def main():
                 config=config,
                 parallel=args.parallel,
                 n_workers=args.workers,
-                force_onion=args.force_onion
+                force_onion=args.force_onion,
+                json_template=args.json_template
             )
             
             execution_time = datetime.now() - execution_start

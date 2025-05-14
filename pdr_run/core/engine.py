@@ -230,8 +230,6 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     rcore_param = config['parameters'].get('rcore', DEFAULT_PARAMETERS['rcore'])
     
     # Convert to numeric if list
-    #alpha = from_string_to_par(alpha_param[0]) if isinstance(alpha_param, list) else from_string_to_par(alpha_param)
-    #rcore = from_string_to_par(rcore_param[0]) if isinstance(rcore_param, list) else from_string_to_par(rcore_param)
     alpha = alpha_param[0] if isinstance(alpha_param, list) else alpha_param
     rcore = rcore_param[0] if isinstance(rcore_param, list) else rcore_param
  
@@ -260,7 +258,6 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
             'rtot': rtot,
             'mass': from_string_to_par(p[2]),
             'sint': from_string_to_par(p[3]),
-            #'preshh2': from_string_to_par(p[4]),
             'model_name_id': model_name_id,
             'species': list_to_string(chemistry) if isinstance(chemistry, list) else chemistry
         }
@@ -278,7 +275,6 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
         parameter_ids.append(param.id)
         
         # Create job entry
-        #model = f"{p[0]}_{p[1]}_{p[2]}_{p[3]}_{p[4]}"
         model = f"{p[0]}_{p[1]}_{p[2]}_{p[3]}_00"
         
         job = get_or_create(
@@ -303,13 +299,14 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     
     return parameter_ids, job_ids
 
-def run_instance(job_id, config=None, force_onion=False):
+def run_instance(job_id, config=None, force_onion=False, json_template=None):
     """Run a single PDR model instance.
     
     Args:
         job_id (int): Job ID
         config (dict, optional): Configuration. Defaults to None.
         force_onion (bool): If True, run onion even if PDR model was skipped
+        json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
     """
     start_time = time.time()
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -440,6 +437,13 @@ def run_instance(job_id, config=None, force_onion=False):
             if not json_found:
                 logger.warning(f"JSON template file {json_template_file} not found in standard locations")
             
+            # If a json_template is provided, use it instead of the default
+            if json_template:
+                import shutil
+                dest_path = os.path.join(tmp_dir, "pdr_config.json.template")
+                shutil.copy(json_template, dest_path)
+                logger.info(f"Using user-supplied JSON template: {json_template}")
+            
             # Change to temporary directory
             os.chdir(tmp_dir)
 
@@ -481,16 +485,17 @@ def run_instance(job_id, config=None, force_onion=False):
         
         return [f"Error: {str(e)}"]
 
-def run_instance_wrapper(job_id, config=None, force_onion=False):
+def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None):
     """Wrapper function for run_instance to handle exceptions.
     
     Args:
         job_id (int): Job ID
         config (dict, optional): Configuration. Defaults to None.
         force_onion (bool): If True, run onion even if PDR model was skipped
+        json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
     """
     try:
-        output = run_instance(job_id, config, force_onion=force_onion)
+        output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template)
         for line in output:
             logger.info(f"[Job {job_id}]: {line}")
     except Exception as e:
@@ -524,7 +529,7 @@ def _calculate_cpu_count(requested_cpus=0, reserved_cpus=2):
     else:
         return max(1, available_cpus - reserved_cpus)
 
-def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False):
+def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None):
     """Run a grid of PDR models with different parameters."""
     start_time = time.time()
     logger.info(f"Starting parameter grid execution for model '{model_name}'")
@@ -597,25 +602,26 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
     # Run jobs
     if parallel:
         Parallel(n_jobs=n_workers)(
-            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion)
+            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion, json_template=json_template)
             for job_id in job_ids
         )
     else:
         for job_id in job_ids:
-            run_instance_wrapper(job_id, config, force_onion=force_onion)
+            run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template)
     
     return job_ids
 
 # Also make this accessible from run_parameter_grid
 run_parameter_grid._calculate_cpu_count = _calculate_cpu_count
 
-def run_model(params=None, model_name=None, config=None, force_onion=False):
+def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None):
     """Run a single PDR model.
     
     Args:
         params (dict, optional): Parameter configuration. Defaults to None.
         model_name (str, optional): Model name. Defaults to None.
         config (dict, optional): Framework configuration. Defaults to None.
+        json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
         
     Returns:
         int: Job ID
@@ -624,7 +630,6 @@ def run_model(params=None, model_name=None, config=None, force_onion=False):
         params = DEFAULT_PARAMETERS
     
     # Take just the first combination of parameters
-    #for key in ['metal', 'dens', 'mass', 'chi', 'col']:
     for key in ['metal', 'dens', 'mass', 'chi']:
         if isinstance(params[key], list) and len(params[key]) > 1:
             params[key] = [params[key][0]]
@@ -633,7 +638,8 @@ def run_model(params=None, model_name=None, config=None, force_onion=False):
         params=params,
         model_name=model_name,
         config=config,
-        parallel=False
+        parallel=False,
+        json_template=json_template
     )
     
     if job_ids:
