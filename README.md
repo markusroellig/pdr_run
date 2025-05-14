@@ -51,8 +51,6 @@ Run a simple PDR model:
 # Basic single-point model
 pdr_run --model-name test_model --single --dens 3.0 --chi 1.0
 
-# View the results
-pdr_results view --model-name test_model
 ```
 
 ## Running with JSON Only
