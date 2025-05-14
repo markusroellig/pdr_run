@@ -34,6 +34,14 @@ Set up the required environment variables:
 # Database configuration
 export PDR_DB_TYPE=sqlite  # Options: sqlite, postgresql, mysql
 export PDR_DB_FILE=/path/to/kosma_tau.db  # Only for sqlite
+export PDR_DB_PASSWORD=your_db_password   # Set your database password here (required for MySQL/PostgreSQL)
+```
+
+> **Note:**  
+> The PDR framework will automatically read the database password from the `PDR_DB_PASSWORD` environment variable if it is set.  
+> This value will override any password specified in configuration files.  
+> If `PDR_DB_PASSWORD` is not set, the password in the config will be used (which defaults to `None`).  
+> If neither is set, database authentication will fail for password-protected databases.
 
 # Storage configuration
 export PDR_STORAGE_TYPE=local  # Options: local, s3
@@ -162,6 +170,16 @@ python -m pytest pdr_run/tests/test_integration.py
 2. **Database Connection Errors**: Verify database configuration
 3. **File Permission Issues**: Check storage directory permissions
 4. **Missing Templates**: Confirm template files exist in the package data
+
+### Database Password Issues
+
+- If you see errors like `Access denied for user ... using password: YES` or the password in the connection string appears as `None`, it means the password was not set correctly.
+- Always set your database password using the `PDR_DB_PASSWORD` environment variable:
+  ```bash
+  export PDR_DB_PASSWORD=your_db_password
+  ```
+- The framework will automatically use this value and not the value in the config file.
+- For security, avoid hardcoding passwords in configuration files.
 
 ### Checking Logs
 ```bash
