@@ -6,6 +6,7 @@ This document provides instructions for installing, configuring, and testing the
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Running a Test Model](#running-a-test-model)
+- [Running with JSON Only](#running-with-json-only)
 - [Resource Management](#resource-management)
 - [Comparing with Example Script](#comparing-with-example-script)
 - [Advanced Usage](#advanced-usage)
@@ -53,6 +54,17 @@ pdr_run --model-name test_model --single --dens 3.0 --chi 1.0
 # View the results
 pdr_results view --model-name test_model
 ```
+
+## Running with JSON Only
+
+You can run the PDR model using only a JSON parameter file. The PDRNEW.INP template is optional. If it is missing, the workflow will proceed as long as a valid JSON template is available.
+
+```bash
+# Run with JSON only (no PDRNEW.INP.template required)
+pdr_run --model-name test_model --json-template my_config.json.template --dens 3.0 --chi 1.0
+```
+
+If `PDRNEW.INP.template` is not found, a warning will be logged, but the model will run using the JSON configuration.
 
 ## Resource Management
 

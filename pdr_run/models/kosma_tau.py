@@ -308,7 +308,13 @@ def create_pdrnew_from_job_id(job_id, session=None, return_content=False):
     model_params = session.get(KOSMAtauParameters, job.kosmatau_parameters_id)
     
     # Get the template content
-    template_content = open_template("PDRNEW.INP.template")
+    try:
+        template_content = open_template("PDRNEW.INP.template")
+    except FileNotFoundError:
+        logger.warning("PDRNEW.INP.template not found. Skipping PDRNEW.INP creation.")
+        if return_content:
+            return None
+        return None
     
     # Transform parameters directly from model_params
     transformed_params = transform(model_params.__dict__)
@@ -833,10 +839,13 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
     # Set grid parameters
     set_gridparam(zmetal, density, cmass, radiation, shieldh2)
     
-    # Create PDRNEW.INP
-    create_pdrnew_from_job_id(job_id, session)
+    # Try to create PDRNEW.INP, but skip if template is missing
+    try:
+        create_pdrnew_from_job_id(job_id, session)
+    except FileNotFoundError:
+        logger.warning("PDRNEW.INP.template not found. Proceeding with JSON-only workflow.")
 
-    # Create pdr_json.config
+    # Always create JSON config
     create_json_from_job_id(job_id, session)
     
     # Flag to track if PDR execution was skipped

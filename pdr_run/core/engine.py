@@ -448,15 +448,12 @@ def run_instance(job_id, config=None, force_onion=False):
             from pdr_run.models.kosma_tau import create_pdrnew_from_job_id, create_json_from_job_id
             session = get_session()
             logger.info(f"Pre-generating input files from templates...")
-            create_pdrnew_from_job_id(job_id, session)
+            try:
+                create_pdrnew_from_job_id(job_id, session)
+            except FileNotFoundError:
+                logger.warning("PDRNEW.INP.template not found. Skipping PDRNEW.INP creation.")
             create_json_from_job_id(job_id, session)
 
-            # Now add the debugging pause
-            #logger.info(f"DEBUGGING: Temporary directory at {tmp_dir}")
-            #logger.info(f"DEBUGGING: Pausing for 300 seconds to allow inspection")
-            #logger.info(f"DEBUGGING: Generated PDRNEW.INP and pdr_config.json are now available")
-            #time.sleep(300)  # Pause for 5 minutes
-            
             # Create log file
             with open("out.log", "w") as log_file:
                 log_file.write(f"Running instance for job ID: {job_id}\n")
