@@ -91,7 +91,7 @@ class KOSMAtauParameters(Base):
     idustmet  = Column(Integer, default=1) #
     ifuvtype  = Column(Integer, default=2) #
     fuvtemp   = Column(Float, default=2.0e4)
-    fuvstring = Column(String,default='Lyalpha.fuv')
+    fuvstring = Column(String(50),default='Lyalpha.fuv')
     inewgam  = Column(Integer, default=0) #
     iscatter  = Column(Integer, default=-1) #
     ihtclgas = Column(Integer, default=1) # compute Tgas?: default=1
