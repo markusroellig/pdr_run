@@ -289,6 +289,20 @@ def main():
     else:
         logger.info("No configuration file specified, using defaults and command-line arguments")
     
+    # Always initialize config structure if it doesn't exist
+    if config is None:
+        config = {}
+    
+    # Ensure database section exists
+    if 'database' not in config:
+        config['database'] = {}
+    
+    # Always check for environment variables and update config
+    db_password_env = os.environ.get('PDR_DB_PASSWORD')
+    if db_password_env:
+        logger.info("Found PDR_DB_PASSWORD in environment, using it for database configuration")
+        config['database']['password'] = db_password_env
+    
     # Prepare parameters
     params = DEFAULT_PARAMETERS.copy()
     logger.debug(f"Default parameters: {params}")
@@ -374,14 +388,6 @@ def main():
         )
         logger.info("Dry run completed, exiting without running models")
         return
-    
-    # Ensure DB password is set from environment if present
-    db_password_env = os.environ.get('PDR_DB_PASSWORD')
-    if db_password_env:
-        if hasattr(args, 'db_password'):
-            args.db_password = db_password_env
-        if 'database' in config:
-            config['database']['password'] = db_password_env
     
     # Execute models
     try:

@@ -64,17 +64,16 @@ Notes:
 
 import logging
 import logging.config  # Add this line
+import os
 
 # Database configuration
 DATABASE_CONFIG = {
-    'type': 'sqlite',              # 'sqlite' or 'mysql'
-    'location': 'local',           # 'local' or 'remote'
-    #'path': '/home/roellig/pdr/pdr/kosma-tau-models.db',  # For SQLite
-    'path': './example.db',
-    'host': 'mysql.rrz.uni-koeln.de',  # For MySQL
-    'port': 3306,                  # For MySQL
-    'database': 'kosma_tau',       # For MySQL
-    'username': None,              # For MySQL
+    'type': 'sqlite',
+    'path': 'kosma_tau.db',
+    'host': 'localhost',
+    'port': 3306,
+    'database': 'kosma_tau',
+    'username': 'root',
     'password': None,              # Set via PDR_DB_PASSWORD environment variable if needed
     'pool_recycle': 280,           # Prevent connection timeout
     'pool_pre_ping': True,         # Check connection health
@@ -183,3 +182,14 @@ non_default_parameters={"ihtclgas":1, "tgasc":50.,
 
 PDR_OUT_DIRS=['pdroutput','onionoutput','Out']
 PDR_INP_DIRS=['pdrinpdata','onioninpdata','In','templates']
+
+def get_database_config():
+    """Get database configuration with environment variable overrides."""
+    config = DATABASE_CONFIG.copy()
+    
+    # Override with environment variables if they exist
+    db_password = os.environ.get('PDR_DB_PASSWORD')
+    if db_password:
+        config['password'] = db_password
+    
+    return config
