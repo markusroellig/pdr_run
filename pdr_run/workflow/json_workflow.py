@@ -54,32 +54,28 @@ def prepare_json_config(job_id, template_path, parameters, tmp_dir):
     return config_path
 
 def archive_json_output(job_id, tmp_dir, output_filename, archive_dir):
-    """Archive JSON output file after model execution.
+    """Archive JSON output files to the model directory.
     
     Args:
         job_id: ID of the PDRModelJob
-        tmp_dir: Temporary directory containing output
-        output_filename: Name of the output JSON file
-        archive_dir: Directory to store archived files
+        tmp_dir: Temporary directory containing the output
+        output_filename: Name of the JSON output file
+        archive_dir: Directory where to archive the file
         
     Returns:
-        str: Path to the archived JSON file
+        str: Path to the archived file
     """
-    # Create archive directory if it doesn't exist
-    os.makedirs(archive_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, output_filename)
     
-    # Source and destination paths
-    src_path = os.path.join(tmp_dir, output_filename)
-    dst_filename = f"output_{job_id}_{output_filename}"
-    dst_path = os.path.join(archive_dir, dst_filename)
+    if not os.path.exists(tmp_path):
+        logger.warning(f"JSON output file not found: {tmp_path}")
+        return None
     
-    # Copy file to archive
-    copy_json_file(src_path, dst_path)
+    # Archive the file
+    archived_path = archive_job_json(job_id, tmp_path, archive_dir)
     
-    # Update job in database
-    update_job_output_json(job_id, dst_path)
+    # Update job record with output JSON reference
+    update_job_output_json(job_id, archived_path)
     
-    # Register output file in database
-    register_json_file(job_id, dst_filename, dst_path)
-    
-    return dst_path
+    logger.info(f"Archived JSON output for job {job_id}: {archived_path}")
+    return archived_path

@@ -47,9 +47,9 @@ def load_json_template(template_path):
 def apply_parameters_to_json(template_data, parameters):
     """Apply parameter substitutions to a JSON template.
     
-    Replaces placeholders in the format ${parameter_name} with corresponding values
-    from the parameters dictionary. Also attempts to convert string values to 
-    appropriate numeric types (int or float) where possible.
+    Replaces placeholders in the format ${parameter_name} or KT_VARparameter_name_ 
+    with corresponding values from the parameters dictionary. Also attempts to convert 
+    string values to appropriate numeric types (int or float) where possible.
     
     Args:
         template_data (dict): The JSON template as a Python dictionary
@@ -58,6 +58,9 @@ def apply_parameters_to_json(template_data, parameters):
     Returns:
         dict: A new dictionary with all parameters substituted
     """
+    import json
+    import re
+    
     # Helper function to convert strings to numeric types when possible
     def numeric_or_string(val):
         try:
@@ -69,26 +72,82 @@ def apply_parameters_to_json(template_data, parameters):
                 return val
 
     # Convert template to string for easier substitution
-    json_str = json.dumps(template_data)
+    if isinstance(template_data, dict):
+        json_str = json.dumps(template_data)
+    else:
+        json_str = str(template_data)
+    
+    logger.debug(f"Starting JSON parameter substitution with {len(parameters)} parameters")
     
     # Replace each parameter placeholder with its value
+    # Support both ${parameter} and KT_VARparameter_ formats
+    substitution_count = 0
     for key, value in parameters.items():
-        json_str = json_str.replace(f"${{{key}}}", str(value))
+        # Format value properly
+        if isinstance(value, (int, float)):
+            if isinstance(value, int):
+                str_value = str(value)
+            elif abs(value) >= 1000 or abs(value) < 0.1:
+                str_value = f"{value:.3e}"
+            else:
+                str_value = f"{value:.6f}"
+        else:
+            str_value = str(value)
+        
+        # Try ${parameter} format first
+        pattern1 = f"${{{key}}}"
+        if pattern1 in json_str:
+            json_str = json_str.replace(pattern1, str_value)
+            substitution_count += 1
+            logger.debug(f"Replaced ${{{key}}} with {str_value}")
+        
+        # Try KT_VARparameter_ format
+        pattern2 = f"KT_VAR{key}_"
+        if pattern2 in json_str:
+            json_str = json_str.replace(pattern2, str_value)
+            substitution_count += 1
+            logger.debug(f"Replaced KT_VAR{key}_ with {str_value}")
+        
+        # Also try without KT_VAR prefix (for backward compatibility)
+        if key.startswith('KT_VAR') and key.endswith('_'):
+            clean_key = key[6:-1]  # Remove KT_VAR and trailing _
+            pattern3 = f"${{{clean_key}}}"
+            if pattern3 in json_str:
+                json_str = json_str.replace(pattern3, str_value)
+                substitution_count += 1
+                logger.debug(f"Replaced ${{{clean_key}}} with {str_value}")
 
-    # Parse the modified JSON string back to a Python object
-    parsed = json.loads(json_str, parse_float=float)
+    logger.debug(f"Made {substitution_count} parameter substitutions")
     
-    # Walk through the object tree to convert string values to numeric types
-    def walk(obj):
-        if isinstance(obj, dict):
-            return {k: walk(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [walk(x) for x in obj]
-        if isinstance(obj, str):
-            return numeric_or_string(obj)
-        return obj
+    # Check for unreplaced placeholders
+    unreplaced_kt = re.findall(r'KT_VAR\w+_', json_str)
+    unreplaced_dollar = re.findall(r'\$\{\w+\}', json_str)
+    
+    if unreplaced_kt or unreplaced_dollar:
+        logger.warning(f"Found unreplaced placeholders: KT_VAR format: {unreplaced_kt}, dollar format: {unreplaced_dollar}")
 
-    return walk(parsed)
+    try:
+        # Parse the modified JSON string back to a Python object
+        parsed = json.loads(json_str, parse_float=float)
+        
+        # Walk through the object tree to convert string values to numeric types
+        def walk(obj):
+            if isinstance(obj, dict):
+                return {k: walk(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [walk(x) for x in obj]
+            if isinstance(obj, str):
+                return numeric_or_string(obj)
+            return obj
+
+        result = walk(parsed)
+        logger.debug("Successfully parsed and processed JSON template")
+        return result
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON after parameter substitution: {e}")
+        logger.debug(f"Problematic JSON string: {json_str[:500]}...")
+        raise
 
 def save_json_config(config, output_path):
     """Save a JSON configuration to a file.
