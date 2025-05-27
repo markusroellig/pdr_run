@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="pdr_run",  # Keep this as is
     version="0.1.0",
-    packages=find_packages(),  # Explicitly include packages
+    packages=find_packages(exclude=['sandbox', 'sandbox.*']),  # Explicitly include packages
     install_requires=[
         "sqlalchemy",
         "mysql-connector-python",

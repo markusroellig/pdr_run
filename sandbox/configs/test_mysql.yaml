@@ -1,0 +1,25 @@
+database:
+  type: mysql
+  host: localhost
+  port: 3306
+  database: pdr_test
+  username: pdr_user
+  # password will be set via PDR_DB_PASSWORD environment variable
+
+storage:
+  type: local
+  base_dir: ./sandbox/storage
+
+model_params:
+  metal: ["100"]
+  dens: ["30", "40"]
+  mass: ["-10"]
+  chi: ["10", "100"]
+  species: ["CO", "C+", "C", "O"]
+
+pdr:
+  base_dir: ./sandbox/pdr_executables
+  pdr_file_name: mockpdr
+  onion_file_name: mockonion
+  getctrlind_file_name: mockgetctrlind
+  mrt_file_name: mockmrt

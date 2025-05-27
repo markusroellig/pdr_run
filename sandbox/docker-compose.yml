@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: pdr_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: pdr_test
+      MYSQL_USER: pdr_user
+      MYSQL_PASSWORD: pdr_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sandbox/mysql/init:/docker-entrypoint-initdb.d
+    networks:
+      - pdr_network
+
+  postgres:
+    image: postgres:13
+    container_name: pdr_postgres
+    environment:
+      POSTGRES_DB: pdr_test
+      POSTGRES_USER: pdr_user
+      POSTGRES_PASSWORD: pdr_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sandbox/postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - pdr_network
+
+  redis:
+    image: redis:6-alpine
+    container_name: pdr_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - pdr_network
+
+  sftp:
+    image: atmoz/sftp:latest
+    container_name: pdr_sftp
+    ports:
+      - "2222:22"
+    command: pdr_user:pdr_password:1001
+    volumes:
+      - ./sandbox/sftp_data:/home/pdr_user/data
+    networks:
+      - pdr_network
+
+volumes:
+  mysql_data:
+  postgres_data:
+
+networks:
+  pdr_network:
+    driver: bridge

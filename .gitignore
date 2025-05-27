@@ -40,3 +40,24 @@ ENV/
 Out/
 pdroutput/
 onionoutput/
+
+
+# Sandbox runtime data (keep structure, ignore data)
+sandbox/storage/*
+sandbox/sqlite/*.db
+sandbox/logs/*
+sandbox/sftp_data/*
+sandbox/test_data/*
+
+# But keep the directories
+!sandbox/storage/.gitkeep
+!sandbox/sqlite/.gitkeep
+!sandbox/logs/.gitkeep
+!sandbox/sftp_data/.gitkeep
+!sandbox/test_data/.gitkeep
+
+# Docker volumes
+.volumes/
+
+# Environment files with secrets (if you create any)
+sandbox/environments/*.local.env

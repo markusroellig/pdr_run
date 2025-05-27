@@ -186,7 +186,27 @@ python -m pytest pdr_run/tests/test_integration.py
 # View the last run log
 cat $(pdr_run --print-last-log)
 ```
+## Development
 
+### Setting Up the Development Environment
+
+1. Clone the repository:
+   ```bash
+   git clone <your-repo>
+   cd pdr_run```
+
+2. Set up the sandbox environment:
+   ```bash
+    make setup-sandbox
+    make start-services
+```
+
+3. Run tests:
+   ```bash
+   make test-all
+```
+
+See SANDBOX_README.md for detailed development instructions.
 ---
 
 For more details, consult the full documentation or reach out to the development team.
