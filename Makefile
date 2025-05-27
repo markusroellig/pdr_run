@@ -1,8 +1,3 @@
-## Enhanced Makefile
-
-Create this `Makefile` at the project root:
-
-```makefile
 .PHONY: help install dev-install setup-sandbox start-services stop-services test-all clean-sandbox
 
 help:
