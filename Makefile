@@ -22,12 +22,12 @@ setup-sandbox:
 	python sandbox/setup_sandbox.py
 
 start-services:
-	cd sandbox && docker-compose up -d
+	cd sandbox && docker compose up -d
 	@echo "Waiting for services to start..."
 	@sleep 10
 
 stop-services:
-	cd sandbox && docker-compose down
+	cd sandbox && docker compose down
 
 test-db:
 	python sandbox/test_db_connections.py
@@ -44,7 +44,7 @@ test-unit:
 test-all: test-unit test-db test-storage test-integration
 
 clean-sandbox:
-	cd sandbox && docker-compose down -v
+	cd sandbox && docker compose down -v
 	rm -rf sandbox/storage/*
 	rm -rf sandbox/sqlite/*.db
 	rm -rf sandbox/logs/*
@@ -55,7 +55,7 @@ lint:
 	python -m pylint pdr_run/
 
 logs:
-	cd sandbox && docker-compose logs -f
+	cd sandbox && docker compose logs -f
 
 restart: stop-services start-services
 
