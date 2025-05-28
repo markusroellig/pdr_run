@@ -1,5 +1,12 @@
 #!/bin/bash
 
+if [ "$1" = "--version" ]; then
+    echo "Mock Onion v1.0"
+    echo "Revision: mock_onion_revision_123"
+    echo "Compiled: Jan 01 2023 at 12:00:00"
+    exit 0
+fi
+
 # mock_long_run.sh - Simulates a longer program execution
 # Usage: ./mock_long_run.sh [total_seconds] [step_seconds]
 

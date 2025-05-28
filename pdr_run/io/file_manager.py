@@ -104,14 +104,14 @@ def get_digest(file_path):
 
 def get_code_revision(exe_path):
     """Get the revision information from an executable.
-    
+
     Extracts revision information from the executable's version output by:
     1. Looking for a line containing 'Revision:'
     2. Falling back to alternative parsing methods if needed
-    
+
     Args:
         exe_path (str): Path to the executable
-        
+
     Returns:
         str: The revision identifier or a default value
     """
@@ -120,27 +120,31 @@ def get_code_revision(exe_path):
         logger.debug(f"Current directory: {os.getcwd()}")
         logger.debug(f"Executable directory exists: {os.path.exists(os.path.dirname(exe_path))}")
         return "executable_not_found"
-        
+
     try:
         logger.debug(f"Getting code revision for: {exe_path}")
         start_time = time.time()
-        
+
         cmd = [exe_path, "--version"]
         logger.debug(f"Executing command: {' '.join(cmd)}")
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         duration = time.time() - start_time
-        
+
         if result.returncode != 0:
             logger.warning(f"Command {cmd} exited with non-zero code: {result.returncode}")
             if result.stderr:
                 logger.debug(f"Command stderr: {result.stderr}")
             return "error_getting_revision"
-            
+
         out = result.stdout
         logger.debug(f"Command completed in {duration:.3f}s with {len(out)} bytes output")
         logger.debug(f"Version output: {out.strip()}")
-        
+
+        # Ensure out is a string, not bytes
+        if isinstance(out, bytes):
+            out = out.decode('utf-8', errors='replace')
+
         # First approach: Look for a line containing "Revision:"
         for line in out.split("\n"):
             if "revision:" in line.lower():

@@ -8,9 +8,9 @@ VERSION="1.2.3"
 
 # Handle version flag
 if [[ "$1" == "--version" ]]; then
-    echo "--------------"
-    echo "mock_long_run.sh Revision: $VERSION"
-    echo "--------------"
+    echo "Mock GetCtrlInd v1.0"
+    echo "Revision: mock_getctrlind_revision_123"
+    echo "Compiled: Jan 01 2023 at 12:00:00"
     exit 0
 fi
 

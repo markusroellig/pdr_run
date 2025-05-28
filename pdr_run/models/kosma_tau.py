@@ -683,7 +683,7 @@ def run_onion(spec, job_id, tmp_dir='./'):
         tmp_dir (str): Temporary directory path
     """
     session = get_session()
-    job = session.query(PDRModelJob).get(job_id)
+    job =  session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
@@ -755,8 +755,8 @@ def copy_onionoutput(spec, job_id):
         job_id (int): Job ID
     """
     session = get_session()
-    job = session.query(PDRModelJob).get(job_id)
-    
+    job = session.get(PDRModelJob, job_id)
+
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
     
@@ -831,8 +831,8 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
         
         # Update database entries
         update_db_pdr_output_entries(job_id, session)
-        
-        job = session.query(PDRModelJob).get(job_id)
+
+        job = session.get(PDRModelJob, job_id)
         shutil.copyfile(job.output_ctrl_ind_file, 'CTRL_IND')
         update_job_status(job_id, 'skipped', session)
         pdr_skipped = True
@@ -875,9 +875,9 @@ def update_db_pdr_output_entries(job_id, session=None):
     """
     if session is None:
         session = get_session()
-    
-    job = session.query(PDRModelJob).get(job_id)
-    
+
+    job = session.get(PDRModelJob, job_id)
+
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
     

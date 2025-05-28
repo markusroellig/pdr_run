@@ -77,6 +77,7 @@ DATABASE_CONFIG = {
     'password': None,              # Set via PDR_DB_PASSWORD environment variable if needed
     'pool_recycle': 280,           # Prevent connection timeout
     'pool_pre_ping': True,         # Check connection health
+    'connect_args': {},  # Add for additional connection parameters
 }
 
 # File storage configuration

@@ -67,21 +67,50 @@ def get_db_uri(config):
     if db_type == 'sqlite':
         return f"sqlite:///{config.get('path', 'kosma_tau.db')}"
     elif db_type == 'mysql':
+        from urllib.parse import quote_plus
+        
         user = config.get('username', '')
         password = config.get('password')
-        if password is None:
-            password = ''
         host = config.get('host', 'localhost')
         port = config.get('port', 3306)
         database = config.get('database', 'kosma_tau')
-        return f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}"
+        
+        # Handle password properly - either include it or omit entirely
+        if password is not None and password != '':
+            # URL-encode password to handle special characters
+            encoded_password = quote_plus(str(password))
+            return f"mysql+mysqlconnector://{user}:{encoded_password}@{host}:{port}/{database}"
+        else:
+            # No password - omit the :password part entirely
+            return f"mysql+mysqlconnector://{user}@{host}:{port}/{database}"
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
-
+    
+def validate_db_config(config):
+    """Validate database configuration."""
+    db_type = config.get('type', 'sqlite')
+    
+    if db_type == 'mysql':
+        required_fields = ['host', 'database', 'username']
+        missing = [field for field in required_fields if not config.get(field)]
+        if missing:
+            raise ValueError(f"Missing required MySQL configuration fields: {missing}")
+    
+    elif db_type == 'sqlite':
+        if not config.get('path'):
+            raise ValueError("SQLite database path is required")
+    
+    return True
+    
 def init_db(config=None):
     """Initialize database connection."""
     global _ENGINE, _SESSION_FACTORY
+    if config is None:
+        from pdr_run.config.default_config import get_database_config
+        config = get_database_config()
     
+    # Validate configuration
+    validate_db_config(config)
     # Database initialization code...
     
     # Default to SQLite in-memory database if no config
