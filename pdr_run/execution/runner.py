@@ -33,7 +33,7 @@ def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None, force
     from pdr_run.database.models import PDRModelJob, KOSMAtauExecutable
     
     session = get_session()
-    job = session.query(PDRModelJob).get(job_id)
+    job = session.get(PDRModelJob, job_id)
     
     if not job:
         logger.error(f"Job {job_id} not found")
@@ -57,7 +57,7 @@ def run_kosma_tau(job_id, template_id=None, parameters=None, tmp_dir=None, force
             raise ValueError("Failed to prepare JSON parameter file")
         
         # Get executable information
-        exe = session.query(KOSMAtauExecutable).get(job.kosmatau_executable_id)
+        exe = session.get(KOSMAtauExecutable, job.kosmatau_executable_id)
         if not exe:
             raise ValueError(f"Executable with ID {job.kosmatau_executable_id} not found")
         

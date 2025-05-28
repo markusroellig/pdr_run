@@ -460,7 +460,7 @@ def run_pdr(job_id, tmp_dir='./'):
         tmp_dir (str): Temporary directory path
     """
     session = get_session()
-    job = session.get(PDRModelJob,job_id)
+    job = session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
@@ -521,7 +521,7 @@ def copy_pdroutput(job_id):
         job_id (int): Job ID
     """
     session = get_session()
-    job = session.get(PDRModelJob,job_id)
+    job = session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
@@ -612,6 +612,8 @@ def copy_pdroutput(job_id):
     
     # Create HDFFile entry in the database
     sha_key = get_digest(os.path.join(model_path, 'pdrgrid', hdf_out_name))
+    
+    # Use session.query().filter_by().first() instead of session.query().get() for complex queries
     instance = session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
     
     if not instance:
@@ -929,6 +931,8 @@ def update_db_pdr_output_entries(job_id, session=None):
     from pdr_run.io.file_manager import get_digest
     
     sha_key = get_digest(os.path.join(model_path, 'pdrgrid', hdf_out_name))
+    
+    # Use session.query().filter_by().first() instead of session.query().get() for complex queries
     instance = session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
     
     if not instance:
