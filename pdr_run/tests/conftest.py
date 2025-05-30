@@ -143,3 +143,4 @@ def db_session():
     # Clean up
     session.close()
     Base.metadata.drop_all(engine)
+

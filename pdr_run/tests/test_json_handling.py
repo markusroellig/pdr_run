@@ -24,7 +24,7 @@ from pdr_run.database.connection import (
     # , register_json_template, process_json_template, 
     # prepare_job_json, validate_json
 )
-from pdr_run.database.models import JSONTemplate, PDRModelJob
+from pdr_run.database.models import JSONTemplate, PDRModelJob, ModelNames, KOSMAtauParameters, KOSMAtauExecutable
 
 class TestJSONHandling(unittest.TestCase):
     """Test cases for JSON file handling."""
@@ -38,6 +38,36 @@ class TestJSONHandling(unittest.TestCase):
             'path': self.test_db_path
         }
         self.session, self.engine = init_db(self.config)
+        
+        # Create required foreign key records first
+        # Create a model name (note: model_path is required)
+        model_name = ModelNames(
+            model_name="Test Model", 
+            model_path="/test/path/model",  # This field is required
+            model_description="Test model for testing"
+        )
+        self.session.add(model_name)
+        self.session.flush()  # Get the ID without committing
+        
+        # Create KOSMATAU parameters (note: using model_name_id, not model_name)
+        kosmatau_params = KOSMAtauParameters(
+            model_name_id=model_name.id,  # Foreign key reference
+            comments="Test parameters for testing"
+        )
+        self.session.add(kosmatau_params)
+        self.session.flush()
+        
+        # Create KOSMATAU executable (note: correct class name is KOSMAtauExecutable)
+        kosmatau_exec = KOSMAtauExecutable(
+            executable_file_name="Test Executable",
+            executable_full_path="/test/path/kosmatau",
+            code_revision="1.0.0"
+        )
+        self.session.add(kosmatau_exec)
+        self.session.flush()
+        
+        # Now commit all the prerequisite records
+        self.session.commit()
         
         # Create a test template
         self.template_dir = tempfile.mkdtemp()
@@ -60,12 +90,12 @@ class TestJSONHandling(unittest.TestCase):
         with open(self.template_path, 'w') as f:
             json.dump(self.template_data, f, indent=2)
         
-        # Create a test job
+        # Create a test job with valid foreign key references
         self.job = PDRModelJob(
             model_job_name="test_job",
-            model_name_id=1,
-            kosmatau_parameters_id=1,
-            kosmatau_executable_id=1,
+            model_name_id=model_name.id,
+            kosmatau_parameters_id=kosmatau_params.id,
+            kosmatau_executable_id=kosmatau_exec.id,
             status="pending"
         )
         self.session.add(self.job)

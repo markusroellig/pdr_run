@@ -68,16 +68,16 @@ import os
 
 # Database configuration
 DATABASE_CONFIG = {
-    'type': 'sqlite',
-    'path': 'kosma_tau.db',
+    'type': 'sqlite',  # This might be forcing SQLite
+    'path': ':memory:',  # This might be the fallback
     'host': 'localhost',
     'port': 3306,
     'database': 'kosma_tau',
     'username': 'root',
-    'password': None,              # Set via PDR_DB_PASSWORD environment variable if needed
-    'pool_recycle': 280,           # Prevent connection timeout
-    'pool_pre_ping': True,         # Check connection health
-    'connect_args': {},  # Add for additional connection parameters
+    'password': None,  # Change this to None to trigger validation
+    'pool_recycle': 280,
+    'pool_pre_ping': True,
+    'connect_args': {},
 }
 
 # File storage configuration
@@ -184,13 +184,3 @@ non_default_parameters={"ihtclgas":1, "tgasc":50.,
 PDR_OUT_DIRS=['pdroutput','onionoutput','Out']
 PDR_INP_DIRS=['pdrinpdata','onioninpdata','In','templates']
 
-def get_database_config():
-    """Get database configuration with environment variable overrides."""
-    config = DATABASE_CONFIG.copy()
-    
-    # Override with environment variables if they exist
-    db_password = os.environ.get('PDR_DB_PASSWORD')
-    if db_password:
-        config['password'] = db_password
-    
-    return config

@@ -16,6 +16,7 @@ setup(
         "distributed",
         "rclone-python",  # Add for remote storage
         "alembic",  # Add for database migrations
+        "psycopg2-binary",  # PostgreSQL support if needed
     ],
     extras_require={
         'test': [

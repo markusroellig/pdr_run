@@ -25,8 +25,8 @@ def _get_session():
     Returns:
         SQLAlchemy Session: An active database session
     """
-    from .connection import get_session
-    return get_session()
+    from .db_manager import get_db_manager
+    return get_db_manager().get_session()
 
 def load_json_template(template_path):
     """Load a JSON template file from disk.

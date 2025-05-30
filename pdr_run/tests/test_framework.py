@@ -54,7 +54,13 @@ def test_run_model(db_session_with_comment):  # Use the updated fixture
     with patch('pdr_run.io.file_manager.get_code_revision', return_value="mocked_revision"), \
          patch('pdr_run.core.engine.get_compilation_date', return_value=datetime.datetime(2023, 1, 1, 12, 0, 0)), \
          patch('pdr_run.io.file_manager.get_compilation_date', return_value=datetime.datetime(2023, 1, 1, 12, 0, 0)), \
-         patch('pdr_run.database.queries.get_session', return_value=db_session_with_comment):  # Use the updated session
-        job_id = run_model(params=test_params, model_name="test_model")
+         patch('pdr_run.database.db_manager.get_db_manager') as mock_get_db_manager:  # Patch the db_manager instead
+        
+        # Configure the mock to return a manager that returns our test session
+        mock_db_manager = MagicMock()
+        mock_db_manager.get_session.return_value = db_session_with_comment
+        mock_get_db_manager.return_value = mock_db_manager
+
+# ...existing code...        job_id = run_model(params=test_params, model_name="test_model")
 
 logger.info("Test completed!")

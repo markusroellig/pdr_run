@@ -69,15 +69,25 @@ def test_mock_mysql_connection(db_type):
         os.environ["PDR_DB_TYPE"] = db_type
         
         if db_type == "mysql":
+            # Use the correct environment variable names
             os.environ["PDR_DB_HOST"] = "localhost"
-            os.environ["PDR_DB_USER"] = "pdr_user"
+            os.environ["PDR_DB_USERNAME"] = "pdr_user"
             os.environ["PDR_DB_PASSWORD"] = "password"
-            os.environ["PDR_DB_NAME"] = "pdr_db"
+            os.environ["PDR_DB_DATABASE"] = "pdr_db"
             
-            # Patch where create_engine is called
-            with patch('sqlalchemy.create_engine') as mock_create_engine:
+            # Patch both create_engine and the event system
+            with patch('pdr_run.database.db_manager.create_engine') as mock_create_engine, \
+                 patch('pdr_run.database.db_manager.event') as mock_event:
+                 
                 mock_engine = MagicMock()
                 mock_create_engine.return_value = mock_engine
+                
+                # Mock the event.listens_for decorator to do nothing
+                mock_event.listens_for.return_value = lambda func: func
+                
+                # Reset the global db_manager to force recreation
+                from pdr_run.database.db_manager import reset_db_manager
+                reset_db_manager()
                 
                 # Reload to pick up the mock
                 importlib.reload(db_conn)
@@ -85,14 +95,32 @@ def test_mock_mysql_connection(db_type):
                 # Get a fresh engine
                 engine = db_conn.get_engine()
                 assert mock_create_engine.called, "Mock was not called"
+                
+                # Verify the connection string was built correctly
+                call_args = mock_create_engine.call_args
+                connection_string = call_args[0][0]  # First positional argument
+                assert 'mysql+mysqlconnector://' in connection_string
+                assert 'pdr_user:password@localhost' in connection_string
+                assert 'pdr_db' in connection_string
         else:
             # For SQLite, just check it returns an engine
-            engine = get_engine()
+            engine = db_conn.get_engine()
             assert engine is not None
     
     finally:
+        # Clean up environment variables
+        env_vars_to_clean = ["PDR_DB_TYPE", "PDR_DB_HOST", "PDR_DB_USERNAME", "PDR_DB_PASSWORD", "PDR_DB_DATABASE"]
+        for var in env_vars_to_clean:
+            if var in os.environ:
+                del os.environ[var]
+                
         # Clean up by restoring original create_engine and reloading module
         db_conn.create_engine = original_create_engine
+        
+        # Reset the db_manager to clear any cached instances
+        from pdr_run.database.db_manager import reset_db_manager
+        reset_db_manager()
+        
         importlib.reload(db_conn)
 
 def test_store_model_run(temp_db_file):

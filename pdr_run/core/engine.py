@@ -77,7 +77,7 @@ from joblib import Parallel, delayed
 from pdr_run.config.default_config import (
     DEFAULT_PARAMETERS, PDR_CONFIG, PDR_OUT_DIRS, PDR_INP_DIRS
 )
-from pdr_run.database.connection import get_session
+from pdr_run.database import get_db_manager
 from pdr_run.database.queries import (
     get_or_create, get_model_name_id, update_job_status
 )
@@ -122,7 +122,8 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     logger.info(f"Creating database entries for model '{model_name}' at '{model_path}'")
     logger.debug(f"Parameter combinations: {len(param_combinations)} total")
     
-    session = get_session()
+    db_manager = get_db_manager()
+    session = db_manager.get_session()
     logger.debug(f"Database session established")
     
     # Get configuration
@@ -311,7 +312,8 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None):
     start_time = time.time()
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    session = get_session()
+    db_manager = get_db_manager()
+    session = db_manager.get_session()
     job = session.get(PDRModelJob, job_id)
     
     if not job:
@@ -450,7 +452,8 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None):
                     
             # Pre-generate input files from templates for debugging
             from pdr_run.models.kosma_tau import create_pdrnew_from_job_id, create_json_from_job_id
-            session = get_session()
+            db_manager = get_db_manager()
+            session = db_manager.get_session()
             logger.info(f"Pre-generating input files from templates...")
             try:
                 create_pdrnew_from_job_id(job_id, session)
@@ -502,7 +505,8 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
         logger.error(f"Error in job {job_id}: {str(e)}", exc_info=True)
         
         # Update job status
-        session = get_session()
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
         # Replace deprecated query.get() with session.get()
         job = session.get(PDRModelJob, job_id)
         if job:
