@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from sqlalchemy import text
-from pdr_run.database.connection import get_engine
+from pdr_run.database.db_manager import get_db_manager
 from pdr_run.database.migration import create_tables
 from pdr_run.database.models import Base
 
@@ -26,7 +26,8 @@ def test_sqlite_connection(temp_db_file):
     os.environ["PDR_DB_FILE"] = temp_db_file
     
     # Create connection
-    engine = get_engine()
+    manager = get_db_manager()
+    engine = manager.engine
     
     # Verify connection is valid
     assert engine is not None
@@ -41,7 +42,8 @@ def test_create_tables(temp_db_file):
     os.environ["PDR_DB_FILE"] = temp_db_file
     
     # Create connection and tables
-    engine = get_engine()
+    manager = get_db_manager()
+    engine = manager.engine
     create_tables(engine)
     
     # Verify tables exist - using SQLAlchemy approach

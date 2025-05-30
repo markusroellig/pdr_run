@@ -423,15 +423,18 @@ class DatabaseManager:
         """Test database connection."""
         try:
             with self.engine.connect() as conn:
+                # FIX: Import text and use it
+                from sqlalchemy import text
+                
                 # Use database-specific test query
                 db_type = self.config.get('type', 'sqlite')
                 if db_type == 'sqlite':
-                    conn.execute("SELECT 1")
+                    conn.execute(text("SELECT 1"))
                 elif db_type == 'mysql':
-                    conn.execute("SELECT 1")
+                    conn.execute(text("SELECT 1"))
                 elif db_type == 'postgresql':
-                    conn.execute("SELECT 1")
-                    
+                    conn.execute(text("SELECT 1"))
+                
             logger.info("Database connection test successful")
             return True
         except Exception as e:
