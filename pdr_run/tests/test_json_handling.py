@@ -263,6 +263,37 @@ class TestJSONHandling(unittest.TestCase):
             
         self.assertTrue(validate_json(valid_json_path))
         self.assertFalse(validate_json(invalid_json_path))
+    
+    def test_circular_imports(self):
+        """Test that imports work without circular dependencies."""
+        try:
+            # This should not raise ImportError due to circular imports
+            from pdr_run.database import json_handlers
+            from pdr_run.workflow.json_workflow import prepare_json_config
+            self.assertTrue(True)  # If we get here, imports worked
+        except ImportError as e:
+            if "circular" in str(e).lower():
+                self.fail(f"Circular import detected: {e}")
+            else:
+                self.fail(f"Import error: {e}")
+    
+    def test_function_availability(self):
+        """Test that all expected functions are available."""
+        from pdr_run.database import json_handlers
+        
+        expected_functions = [
+            'load_json_template',
+            'apply_parameters_to_json', 
+            'save_json_config',
+            'process_json_template',
+            'register_json_template',
+            'register_json_file',
+            'prepare_job_json'
+        ]
+        
+        for func_name in expected_functions:
+            self.assertTrue(hasattr(json_handlers, func_name), 
+                           f"Missing function: {func_name}")
 
 if __name__ == "__main__":
     unittest.main()

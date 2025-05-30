@@ -174,3 +174,40 @@ def test_error_handling(mock_environment):
         
         # Verify error was logged
         mock_logger.error.assert_called()
+
+def test_json_import_integration(mock_environment):
+    """Test that JSON components can be imported and work together without circular imports."""
+    import tempfile
+    import json
+    
+    # Test that JSON workflow components work together
+    from pdr_run.workflow.json_workflow import prepare_json_config
+    from pdr_run.database.json_handlers import load_json_template, apply_parameters_to_json
+    
+    template_data = {
+        "model_name": "${model_name}",
+        "parameters": {
+            "dens": "KT_VARdens_",
+            "chi": "${chi}"
+        }
+    }
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(template_data, f)
+        template_path = f.name
+    
+    try:
+        # Test basic template processing (no database required)
+        loaded = load_json_template(template_path)
+        processed = apply_parameters_to_json(loaded, {
+            "model_name": "test_model",
+            "dens": "1000",
+            "chi": "10"
+        })
+        
+        assert processed["model_name"] == "test_model"
+        assert processed["parameters"]["dens"] == 1000
+        assert processed["parameters"]["chi"] == 10
+        
+    finally:
+        os.unlink(template_path)
