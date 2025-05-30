@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from pdr_run.database.json_handlers import (
@@ -31,8 +32,8 @@ class TestJSONHandling(unittest.TestCase):
     
     def setUp(self):
         """Set up test environment."""
-        # Initialize test database
-        self.test_db_path = 'test_db.sqlite'
+        # Create unique test database for each test instance
+        self.test_db_path = f'test_db_{uuid.uuid4().hex[:8]}.sqlite'
         self.config = {
             'type': 'sqlite',
             'path': self.test_db_path
@@ -73,9 +74,12 @@ class TestJSONHandling(unittest.TestCase):
         self.template_dir = tempfile.mkdtemp()
         self.template_path = os.path.join(self.template_dir, 'test_template.json')
         
+        # Make template content unique for each test to avoid SHA256 conflicts
+        unique_id = uuid.uuid4().hex[:8]
         self.template_data = {  # Add this attribute
             "model": {
                 "name": "${model_name}",
+                "unique_id": unique_id,  # Make each template unique
                 "parameters": {
                     "density": "${density}",
                     "temperature": "${temperature}",
@@ -192,13 +196,13 @@ class TestJSONHandling(unittest.TestCase):
     
     def test_register_template(self):
         template = register_json_template(
-            name="Test Template",
+            name=f"Test Template {uuid.uuid4().hex[:8]}",  # Make name unique
             path=self.template_path,
             description="A test template"
         )
         
         self.assertIsNotNone(template)
-        self.assertEqual(template.name, "Test Template")
+        self.assertIn("Test Template", template.name)
         
     def test_process_template(self):
         params = {
@@ -218,9 +222,9 @@ class TestJSONHandling(unittest.TestCase):
         self.assertEqual(processed["model"]["parameters"]["density"], 1000)
         
     def test_prepare_job_json(self):
-        # First register template
+        # First register template with unique name
         template = register_json_template(
-            name="Test Template",
+            name=f"Test Template {uuid.uuid4().hex[:8]}",
             path=self.template_path
         )
         
