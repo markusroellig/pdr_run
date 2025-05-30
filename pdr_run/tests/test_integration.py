@@ -211,3 +211,62 @@ def test_json_import_integration(mock_environment):
         
     finally:
         os.unlink(template_path)
+
+def test_password_environment_variable_integration(mock_environment):
+    """Test that PDR_DB_PASSWORD environment variable is properly handled end-to-end."""
+    import subprocess
+    import tempfile
+    import sys
+    
+    def run_cli_test(env_vars=None, config_content=None, expected_in_output=None):
+        """Helper to run CLI and check output."""
+        # Set up environment
+        test_env = os.environ.copy()
+        test_env.update(mock_environment)  # Use the fixture environment
+        if env_vars:
+            test_env.update(env_vars)
+        
+        # Create config file if needed
+        config_file = None
+        if config_content:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(config_content)
+                config_file = f.name
+        
+        # Build command
+        cmd = [sys.executable, "-m", "pdr_run.cli.runner", "--dry-run", "--model-name", "test"]
+        if config_file:
+            cmd.extend(["--config", config_file])
+        
+        try:
+            result = subprocess.run(cmd, env=test_env, capture_output=True, text=True, timeout=10)
+            
+            if expected_in_output:
+                assert expected_in_output in result.stdout.lower() or expected_in_output in result.stderr.lower()
+            
+            return result.returncode == 0
+            
+        finally:
+            if config_file:
+                os.unlink(config_file)
+    
+    # Test 1: Environment variable overrides default
+    assert run_cli_test(
+        env_vars={'PDR_DB_PASSWORD': 'env_password123'},
+        expected_in_output='env_password123'
+    )
+    
+    # Test 2: Environment variable overrides config file
+    config_with_password = """
+database:
+  type: mysql
+  host: test.example.com
+  username: test_user
+  database: test_db
+  password: config_password456
+"""
+    assert run_cli_test(
+        env_vars={'PDR_DB_PASSWORD': 'env_wins789'},
+        config_content=config_with_password,
+        expected_in_output='env_wins789'
+    )

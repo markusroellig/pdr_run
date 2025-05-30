@@ -222,6 +222,132 @@ class TestDatabaseManager(unittest.TestCase):
                         
                         # This should NOT be SQLite
                         assert 'mysql+mysqlconnector://' in conn_string, f"Expected MySQL, got: {conn_string}"
+    
+    def test_password_precedence_order(self):
+        """Test that environment variable takes precedence over config."""
+        config_with_password = {
+            'type': 'mysql',
+            'host': 'localhost', 
+            'username': 'test',
+            'password': 'config_password',
+            'database': 'test_db'
+        }
+        
+        with patch.dict(os.environ, {'PDR_DB_PASSWORD': 'env_password'}):
+            with patch('sqlalchemy.create_engine') as mock_create_engine:
+                mock_engine = MagicMock()
+                mock_create_engine.return_value = mock_engine
+                
+                # Mock _validate_config to avoid validation
+                with patch.object(DatabaseManager, '_validate_config'):
+                    manager = DatabaseManager(config_with_password)
+                    
+                    # Environment variable should override config
+                    self.assertEqual(manager.config['password'], 'env_password')
+    
+    def test_empty_password_handling(self):
+        """Test handling of empty password values."""
+        config = {
+            'type': 'mysql',
+            'host': 'localhost',
+            'username': 'test', 
+            'database': 'test_db'
+        }
+        
+        # Test with empty string in environment
+        with patch.dict(os.environ, {'PDR_DB_PASSWORD': ''}):
+            with patch('sqlalchemy.create_engine') as mock_create_engine:
+                mock_engine = MagicMock()
+                mock_create_engine.return_value = mock_engine
+                
+                with patch.object(DatabaseManager, '_validate_config'):
+                    manager = DatabaseManager(config)
+                    
+                    # Empty string should be treated as no password
+                    self.assertEqual(manager.config.get('password'), '')
+    
+    def test_deprecated_uri_construction_with_passwords(self):
+        """Test that deprecated get_db_uri function handles passwords correctly."""
+        import os
+        from unittest.mock import patch
+        from pdr_run.database.connection import get_db_uri, get_database_config
+        
+        # Test 1: No password
+        # Completely isolate from environment - patch the _load_config method directly
+        with patch.dict(os.environ, {}, clear=True):
+            with patch('pdr_run.database.db_manager.DatabaseManager._validate_config'), \
+                 patch('sqlalchemy.create_engine'), \
+                 patch.object(DatabaseManager, '_load_config') as mock_load_config:
+                
+                # Force the config to stay MySQL
+                test_config = {'type': 'mysql', 'host': 'test.com', 'username': 'user', 'database': 'db'}
+                mock_load_config.return_value = test_config
+                
+                config = get_database_config()
+                config.update(test_config)
+                uri = get_db_uri(config)
+                
+                self.assertNotIn('None', uri)
+                self.assertIn('mysql', uri)
+                self.assertIn('user@test.com', uri)
+                self.assertIn('/db', uri)
+        
+        # Test 2: With password from environment
+        with patch.dict(os.environ, {'PDR_DB_PASSWORD': 'secret123'}, clear=True):
+            with patch('pdr_run.database.db_manager.DatabaseManager._validate_config'), \
+                 patch('sqlalchemy.create_engine'), \
+                 patch.object(DatabaseManager, '_load_config') as mock_load_config:
+                
+                # Force the config to stay MySQL with password
+                test_config = {'type': 'mysql', 'host': 'test.com', 'username': 'user', 'database': 'db', 'password': 'secret123'}
+                mock_load_config.return_value = test_config
+                
+                config = get_database_config()
+                config.update({'type': 'mysql', 'host': 'test.com', 'username': 'user', 'database': 'db'})
+                uri = get_db_uri(config)
+                
+                self.assertIn('secret123', uri)
+                self.assertNotIn('None', uri)
+                self.assertIn('mysql', uri)
+                self.assertIn('user:secret123@test.com', uri)
+
+    def test_mysql_connection_via_deprecated_init_db(self):
+        """Test MySQL connection through deprecated init_db function."""
+        mysql_config = {
+            'type': 'mysql',
+            'host': 'mysql.example.com',
+            'port': 3306,
+            'database': 'pdr_test',
+            'username': 'test_user',
+            'password': 'test_password'
+        }
+        
+        # Mock all the components that would interact with real MySQL
+        # Also patch the _load_config to prevent environment override
+        with patch('pdr_run.database.db_manager.create_engine') as mock_create_engine, \
+             patch('pdr_run.database.db_manager.DatabaseManager._validate_config'), \
+             patch('pdr_run.database.db_manager.DatabaseManager._setup_engine_events'), \
+             patch('pdr_run.database.models.Base.metadata.create_all'), \
+             patch.object(DatabaseManager, '_load_config', return_value=mysql_config), \
+             patch.dict(os.environ, {}, clear=True):  # Clear environment to prevent override
+            
+            mock_engine = MagicMock()
+            mock_create_engine.return_value = mock_engine
+            
+            # Test the deprecated init_db function
+            from pdr_run.database.connection import init_db
+            session, engine = init_db(mysql_config)
+            
+            # Verify mock was called with correct connection string
+            mock_create_engine.assert_called_once()
+            conn_args = mock_create_engine.call_args[0][0]
+            
+            self.assertIn('mysql+mysqlconnector://', conn_args)
+            self.assertIn('@mysql.example.com:3306/pdr_test', conn_args)
+            self.assertIn('test_user:test_password', conn_args)
+            
+            # Cleanup
+            session.close()
 
 if __name__ == '__main__':
     unittest.main()
