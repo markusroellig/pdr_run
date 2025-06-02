@@ -40,7 +40,7 @@ class DatabaseManager:
         
         Precedence order:
         1. Environment variables (highest)
-        2. Provided config dictionary
+        2. Provided config dictionary (config file)
         3. Default configuration (lowest)
         """
         from pdr_run.config.default_config import DATABASE_CONFIG
@@ -48,26 +48,21 @@ class DatabaseManager:
         # Start with defaults
         final_config = DATABASE_CONFIG.copy()
         logger.debug(f"Starting with defaults: {DATABASE_CONFIG}")
-        logger.debug(f"Provided config: {config}")
-        logger.debug(f"Provided config type: {type(config)}")
         
-        # Override with provided config
+        # Override with provided config (config file) - THIS IS THE KEY FIX
         if config:
-            logger.debug(f"Config before update: {final_config}")
-            
-            # The config passed here should already be the database section
-            # No need to check for nested 'database' key
-            if isinstance(config, dict):
-                final_config.update(config)
-                logger.debug(f"Config after update: {final_config}")
-            else:
-                logger.error(f"Config is not a dictionary: {config}")
-                raise ValueError(f"Configuration must be a dictionary, got {type(config)}")
+            logger.debug(f"Config file provided: {config}")
+            # IMPORTANT: Only update if the config file actually specifies the values
+            # This ensures config file takes precedence over defaults
+            for key, value in config.items():
+                if value is not None:  # Only override if explicitly set in config
+                    final_config[key] = value
+                    logger.debug(f"Config file override: {key}={value}")
         
         # Override with environment variables (highest precedence)
         env_overrides = {
             'PDR_DB_TYPE': 'type',
-            'PDR_DB_HOST': 'host',
+            'PDR_DB_HOST': 'host', 
             'PDR_DB_PORT': 'port',
             'PDR_DB_DATABASE': 'database',
             'PDR_DB_USERNAME': 'username',
@@ -88,14 +83,14 @@ class DatabaseManager:
                 else:
                     final_config[config_key] = env_value
 
-        # VALIDATE CONFIGURATION - NO FALLBACK TO SQLITE
-        self._validate_config(final_config)
-                    
-        # Log configuration (without password)
+        # Log final configuration (without password)
         safe_config = final_config.copy()
         if 'password' in safe_config and safe_config['password']:
             safe_config['password'] = '***'
         logger.debug(f"Final database configuration: {safe_config}")
+        
+        # Validate the final configuration
+        self._validate_config(final_config)
         
         return final_config
     

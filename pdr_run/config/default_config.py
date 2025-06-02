@@ -72,8 +72,8 @@ DATABASE_CONFIG = {
     'path': ':memory:',  # This might be the fallback
     'host': 'localhost',
     'port': 3306,
-    'database': 'kosma_tau',
-    'username': 'root',
+    'database': 'pdr_test',
+    'username': 'pdr_user',
     'password': None,  # Change this to None to trigger validation
     'pool_recycle': 280,
     'pool_pre_ping': True,
