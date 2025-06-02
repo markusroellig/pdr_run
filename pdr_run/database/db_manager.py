@@ -222,11 +222,12 @@ class DatabaseManager:
             
     def _build_mysql_connection_string(self) -> str:
         """Build MySQL connection string with proper password handling."""
-        user = self.config.get('username', 'root')
+        # Remove hardcoded defaults - trust the loaded configuration
+        user = self.config['username']      # Remove default='root'
         password = self.config.get('password', '')
-        host = self.config.get('host', 'localhost')
-        port = self.config.get('port', 3306)
-        database = self.config.get('database', 'kosma_tau')
+        host = self.config['host']          # Remove default='localhost'  
+        port = self.config['port']          # Remove default=3306
+        database = self.config['database']  # Remove default='kosma_tau'
         
         # Build connection string with proper password handling
         if password:
@@ -310,9 +311,9 @@ class DatabaseManager:
                 
         elif db_type in ('mysql', 'postgresql'):
             options.update({
-                'pool_size': self.config.get('pool_size', 5),
-                'max_overflow': self.config.get('max_overflow', 10),
-                'pool_timeout': self.config.get('pool_timeout', 30),
+                'pool_size': self.config.get('pool_size', 20),
+                'max_overflow': self.config.get('max_overflow', 30),
+                'pool_timeout': self.config.get('pool_timeout', 60),
                 'pool_recycle': self.config.get('pool_recycle', 3600),
                 'pool_pre_ping': self.config.get('pool_pre_ping', True),
             })
@@ -320,6 +321,13 @@ class DatabaseManager:
             # Add specific options for MySQL
             if db_type == 'mysql':
                 options['connect_args'] = self.config.get('connect_args', {})
+                # Add MySQL specific connection args to handle timeouts
+                if 'connect_args' not in self.config:
+                    options['connect_args'] = {}
+                options['connect_args'].update({
+                    'autocommit': True,
+                    'sql_mode': 'TRADITIONAL',
+                })
                 
         return options
         
@@ -368,7 +376,7 @@ class DatabaseManager:
     @contextmanager
     def session_scope(self):
         """Provide a transactional scope for database operations."""
-        session = self.get_session()
+        session = self.session_factory()
         try:
             yield session
             session.commit()
