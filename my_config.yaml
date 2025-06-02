@@ -1,0 +1,142 @@
+# PDR Framework Configuration File
+# This file allows you to override default settings from default_config.py
+# All sections are optional - only include what you want to change
+
+# Database Configuration
+database:
+  type: sqlite              # 'sqlite' or 'mysql'
+  path: ':memory:'          # For SQLite: file path or ':memory:'
+  host: localhost           # For MySQL: database host
+  port: 3306               # For MySQL: database port
+  database: kosma_tau      # For MySQL: database name
+  username: root           # For MySQL: username
+  password: null           # For MySQL: password (use environment variable PDR_DB_PASSWORD)
+  pool_recycle: 280        # Connection pool recycle time
+  pool_pre_ping: true      # Enable connection health checks
+  connect_args: {}         # Additional connection arguments
+
+# File Storage Configuration
+storage:
+  type: local                                    # 'local', 'rclone', 'sftp', 'ftp'
+  base_dir: /home/roellig/pdr/pdr/test_run      # Base directory for storage
+  rclone_remote: kosmatau                       # Rclone remote name (if using rclone)
+  use_mount: false                              # Use mount functionality
+  host: null                                    # For SFTP/FTP: hostname
+  port: null                                    # For SFTP/FTP: port
+  username: null                                # For SFTP/FTP: username
+  password: null                                # For SFTP/FTP: password
+  use_local_copy: true                          # Keep local copy when using remote storage
+
+# PDR Model Configuration
+pdr:
+  model_name: test1
+  base_dir: /home/roellig/pdr/pdr/test_run
+  pdr_file_name: mockpdr
+  onion_file_name: mockonion
+  getctrlind_file_name: mockgetctrlind
+  mrt_file_name: mockmrt
+  pdrinp_template_file: PDRNEW.INP.template
+  json_template_file: pdr_config.json.template
+  chem_database: chem_rates_2022-10-21-ERS.dat
+  chem_origin: UDfA12
+  exe_revision: dev
+  compilation_date: '2099-01-01'
+
+# User Configuration
+user:
+  username: Markus Roellig
+  email: m.roellig@physikalischer-verein.de
+
+# Default Model Parameters
+model_params:
+  # Basic physical parameters
+  metal: ["100"]           # Metallicity relative to solar
+  dens: ["30"]            # Log density (cm^-3)
+  mass: ["-10"]           # Log mass (solar masses)
+  chi: ["10"]             # Log UV field strength
+  
+  # Cloud structure parameters
+  alpha: 1.5              # Cloud density profile parameter
+  rcore: 0.2              # Core radius parameter
+  
+  # Species to compute radiative transfer
+  species:
+    - CO
+    - C+
+    - C
+    - O
+    - 13C+
+    - 13C
+    - 13CO
+    - OH
+    - CH+
+    - HCO+
+    - H13CO+
+  
+  # Default species for chemistry (as single string)
+  default_species: >
+    H+ H2+ H3+ HE+ HE C CH C+ CH+ CH2+ CH2 CH3+ CH3 CH4+ CH4 CH5+ 
+    CN CN+ HCN HCN+ CO CO+ HCO+ HCO CO2 CO2+ H2CO H2CO+ 13C 13CH 13CO 13C+ 13CH+ 13CH2+ 
+    13CO+ H13CO+ N N2 N2+ N2H+ NO NO+ O O+ OH OH+ H2O H2O+ H3O+ O2 O2+ 
+    18O C18O 13C18O O18O O18O+ 18OH 18OH+ H218O H218O+ H318O+ 
+    SO SO+ SO2 SO2+ HSO2+ S S+ 
+    SI SI+ SIH SIH+ SIH2+ SIO SIO+ SIOH+ CH3OH+ CH3O CH3OH H2O2 
+    JH JC JCH JCH2 JCH3 JCH4 JCN JHCN JCO JHCO JCO2 JH2CO JCH3O JCH3OH 
+    JN JN2 JNO JO JOH JH2O JH2O2 JO2 JSO JSO2 JS
+  
+  # Chemistry species (as single string)
+  chemistry: >
+    HE+ HE H+ H2+ H3+ C CH C+ CH+ CH2+ CH2 CH3+ CH3 
+    CH4+ CH4 CH5+ CN CN+ HCN HCN+ CO CO+ HCO+ HCO CO2 CO2+ 
+    H2CO H2CO+ 
+    13C 13CH 13CO 13C+ 13CH+ 
+    13CH2+ 13CO+ H13CO+ N N2 N2+ N2H+ NO NO+ O 
+    O+ OH OH+ H2O H2O+ H3O+ 
+    O2 O2+ 18O 
+    C18O 13C18O O18O O18O+ 18OH 18OH+ H218O H218O+ H318O+ SO 
+    SO+ SO2 SO2+ HSO2+ S S+ SI SI+ SIH SIH+ 
+    SIH2+ SIO SIO+ SIOH+ 
+    CH3OH+ CH3O CH3OH H2O2 JH JC JCH JCH2 JCH3 JCH4 
+    JCN JHCN JCO JHCO JCO2 JH2CO JCH3O JCH3OH JN JN2 
+    JNO JO JOH JH2O JH2O2 JO2 JSO JSO2 JS
+
+# Non-default parameters for advanced users
+non_default_params:
+  ihtclgas: 1              # Gas heating method
+  tgasc: 50.0              # Gas temperature (K)
+  ihtcldust: 1             # Dust heating method
+  tdustc: 20               # Dust temperature (K)
+  idustmet: 1              # Dust metallicity method
+  ih2meth: 0               # H2 formation method
+  cosray: 1.0e-16          # Cosmic ray ionization rate
+  beta: 1.0e5              # Beta parameter
+  ifuvtype: 2              # FUV type
+  ifuvmeth: 1              # FUV method
+  inewgam: 0               # New gamma method
+  ipehmeth: 1              # Photoelectric heating method
+  inds: 4                  # Number of density steps
+  indstr: 1                # Density structure method
+  ih2shld: 0               # H2 shielding method
+  indxpeh: 4               # Photoelectric heating index
+  indx: 7                  # Index parameter
+  ih2onpah: 0              # H2 on PAH method
+  step1: 100               # Step 1 parameter
+  step2: 200               # Step 2 parameter
+  nconv_time: 0            # Convergence time steps
+  temp_start: 0.0          # Starting temperature
+  atol_chem: 1.0e-10       # Chemistry absolute tolerance
+  h2_structure: 0          # H2 structure method
+  itmeth: 2                # Iteration method
+  rtol_iter: 3.0e-2        # Iteration relative tolerance
+
+# Directory structure
+directories:
+  pdr_out_dirs:
+    - pdroutput
+    - onionoutput
+    - Out
+  pdr_inp_dirs:
+    - pdrinpdata
+    - onioninpdata
+    - In
+    - templates

@@ -122,7 +122,25 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     logger.info(f"Creating database entries for model '{model_name}' at '{model_path}'")
     logger.debug(f"Parameter combinations: {len(param_combinations)} total")
     
-    db_manager = get_db_manager()
+    # Extract database config if available
+    db_config = None
+    if config and 'database' in config:
+        db_config = config['database']
+        logger.debug(f"Using database config from provided config: {db_config}")
+        logger.debug(f"Database config type: {type(db_config)}")
+        logger.debug(f"Database config items: {list(db_config.items()) if isinstance(db_config, dict) else 'Not a dict'}")
+
+    
+    db_manager = get_db_manager(db_config)  # Pass the database config
+    
+    # CREATE TABLES BEFORE GETTING SESSION
+    try:
+        db_manager.create_tables()
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create database tables: {e}")
+        raise
+    
     session = db_manager.get_session()
     logger.debug(f"Database session established")
     

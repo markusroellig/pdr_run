@@ -47,11 +47,23 @@ class DatabaseManager:
         
         # Start with defaults
         final_config = DATABASE_CONFIG.copy()
+        logger.debug(f"Starting with defaults: {DATABASE_CONFIG}")
+        logger.debug(f"Provided config: {config}")
+        logger.debug(f"Provided config type: {type(config)}")
         
         # Override with provided config
         if config:
-            final_config.update(config)
+            logger.debug(f"Config before update: {final_config}")
             
+            # The config passed here should already be the database section
+            # No need to check for nested 'database' key
+            if isinstance(config, dict):
+                final_config.update(config)
+                logger.debug(f"Config after update: {final_config}")
+            else:
+                logger.error(f"Config is not a dictionary: {config}")
+                raise ValueError(f"Configuration must be a dictionary, got {type(config)}")
+        
         # Override with environment variables (highest precedence)
         env_overrides = {
             'PDR_DB_TYPE': 'type',
@@ -66,6 +78,7 @@ class DatabaseManager:
         for env_var, config_key in env_overrides.items():
             env_value = os.environ.get(env_var)
             if env_value is not None:
+                logger.debug(f"Environment override: {env_var}={env_value} -> {config_key}")
                 # Special handling for port (must be int)
                 if config_key == 'port' and env_value:
                     try:
@@ -82,7 +95,7 @@ class DatabaseManager:
         safe_config = final_config.copy()
         if 'password' in safe_config and safe_config['password']:
             safe_config['password'] = '***'
-        logger.debug(f"Database configuration: {safe_config}")
+        logger.debug(f"Final database configuration: {safe_config}")
         
         return final_config
     
