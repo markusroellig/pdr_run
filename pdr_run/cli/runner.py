@@ -267,7 +267,7 @@ def print_configuration(params, model_name, config, parallel=False, n_workers=No
     print("\n=== END CONFIGURATION ===\n")
 
 def main():
-    """Main entry point."""
+    """Main entry point for the PDR run CLI."""
     start_time = datetime.now()
     logger.info(f"========== PDR RUN STARTED AT {start_time.strftime('%Y-%m-%d %H:%M:%S')} ==========")
     logger.info(f"Python version: {sys.version}")
@@ -303,6 +303,31 @@ def main():
         logger.info("Found PDR_DB_PASSWORD in environment, using it for database configuration")
         config['database']['password'] = db_password_env
     
+    # ===== MODEL NAME PRECEDENCE LOGIC =====
+    # Priority: 1. Command line, 2. Config file, 3. Default
+    model_name = None
+    model_name_source = "default"
+    
+    # 1. Check command line first (highest priority)
+    if hasattr(args, 'model_name') and args.model_name and args.model_name != f"pdr_model_{start_time.strftime('%Y%m%d_%H%M%S')}":
+        # User explicitly provided a model name via command line
+        model_name = args.model_name
+        model_name_source = "command-line"
+    
+    # 2. Check config file (medium priority)
+    elif config and 'pdr' in config and 'model_name' in config['pdr'] and config['pdr']['model_name']:
+        model_name = config['pdr']['model_name']
+        model_name_source = "config-file"
+    
+    # 3. Use default (lowest priority)
+    else:
+        model_name = f"pdr_model_{start_time.strftime('%Y%m%d_%H%M%S')}"
+        model_name_source = "default"
+    
+    # Update args.model_name with the determined model name
+    args.model_name = model_name
+    logger.info(f"Model name: '{model_name}' (source: {model_name_source})")
+    
     # Prepare parameters
     params = DEFAULT_PARAMETERS.copy()
     logger.debug(f"Default parameters: {params}")
@@ -310,16 +335,7 @@ def main():
     # Track parameter sources for debugging
     param_sources = {key: "default" for key in params.keys()}
     
-    # Override with command-line arguments
-    #for param in ['metal', 'dens', 'mass', 'chi', 'col', 'species']:
-    for param in ['metal', 'dens', 'mass', 'chi', 'species']:
-        if hasattr(args, param) and getattr(args, param) is not None:
-            value = getattr(args, param)
-            logger.info(f"Overriding parameter '{param}' with CLI value: {value}")
-            params[param] = value
-            param_sources[param] = "command-line"
-    
-    # Override with config if present
+    # Override with config file parameters first (lower priority)
     if config and 'model_params' in config:
         logger.info("Applying model parameters from configuration file")
         for key, value in config['model_params'].items():
@@ -329,6 +345,14 @@ def main():
                 param_sources[key] = "config-file"
             else:
                 logger.warning(f"Unknown parameter '{key}' in configuration file")
+    
+    # Override with command-line arguments (highest priority)
+    for param in ['metal', 'dens', 'mass', 'chi', 'species']:
+        if hasattr(args, param) and getattr(args, param) is not None:
+            value = getattr(args, param)
+            logger.info(f"Overriding parameter '{param}' with CLI value: {value}")
+            params[param] = value
+            param_sources[param] = "command-line"
     
     # Log final parameter configuration with sources
     logger.info("Final parameter configuration:")

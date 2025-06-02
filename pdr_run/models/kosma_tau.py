@@ -676,26 +676,33 @@ def set_oniondir(spec):
     
     logger.info(f"Set up onion directory for species {spec}")
 
-def run_onion(spec, job_id, tmp_dir='./'):
+def run_onion(spec, job_id, tmp_dir='./', config=None):
     """Run the onion model for a species.
     
     Args:
         spec (str): Species name
         job_id (int): Job ID
         tmp_dir (str): Temporary directory path
+        config (dict): Configuration dictionary containing executable name
     """
     session = get_session()
     job =  session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
-    
+
+       # Get the onion executable name from config or fall back to default
+    if config and 'pdr' in config:
+        onion_file_name = config['pdr'].get('onion_file_name', PDR_CONFIG['onion_file_name'])
+    else:
+        onion_file_name = PDR_CONFIG['onion_file_name']
+ 
 
     # hdf_name = job.output_hdf4_file
     # hdf5_name = job.output_hdf5_struct_file
     # now linking to the hdf files in the pdroutput directory
 #    hdf_name = os.path.join(tmp_dir, 'pdroutput', 'pdrout.hdf')
-    hdf5_name = os.path.join(tmp_dir, 'pdroutput', 'pdrstruct_s.hdf')
+    hdf5_name = os.path.join(tmp_dir, 'pdroutput', 'pdrstruct_s.hdf5')
     
 #    # Create symbolic link to HDF file
 #    if os.path.exists(os.path.join(tmp_dir, 'pdrout.hdf')):
@@ -735,8 +742,11 @@ def run_onion(spec, job_id, tmp_dir='./'):
         logger.info(f"Running onion for {spec}")
         print(f"Running onion for {spec}", file=textout)
         #print("Getting the CTRL_IND file", file=textout)
-        
-        onion_code = './' + PDR_CONFIG['onion_file_name']
+
+        # moving CTRL_IND to the tmp_dir for onionexe
+        shutil.copyfile(os.path.join(tmp_dir, 'pdroutput', 'CTRL_IND'), os.path.join(tmp_dir, 'CTRL_IND'))
+
+        onion_code = './' + onion_file_name
         logger.info(f"Running onion code {onion_code}")
         try:
             #os.system(f"{onion_code} pdrout.hdf >> {textout.name} 2>> {textout.name}")
@@ -789,13 +799,14 @@ def copy_onionoutput(spec, job_id):
     
     logger.info(f"Copied onion output for species {spec}")
 
-def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
+def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     """Run the KOSMA-tau model workflow for a job.
     
     Args:
         job_id (int): Job ID
         tmp_dir (str): Temporary directory path
         force_onion (bool): If True, run onion even if PDR model was skipped
+        config (dict): Configuration dictionary
     """
     logger.info(f"Running KOSMA-tau model for job {job_id}")
     
@@ -811,17 +822,16 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
     logger.info(f"MODEL is {model}")
     hdf5_out_name = 'pdrstruct' + model + '.hdf5' # check if HDF5 file already exists 
     
-    # Set grid parameters
-    set_gridparam(zmetal, density, cmass, radiation, shieldh2)
     
-    # Try to create PDRNEW.INP, but skip if template is missing
+    # Primary workflow: Create JSON config (always)
+    create_json_from_job_id(job_id, session)
+    
+    # Legacy support: Create PDRNEW.INP only if template exists
     try:
         create_pdrnew_from_job_id(job_id, session)
+        logger.info("Created PDRNEW.INP for legacy compatibility")
     except FileNotFoundError:
-        logger.warning("PDRNEW.INP.template not found. Proceeding with JSON-only workflow.")
-
-    # Always create JSON config
-    create_json_from_job_id(job_id, session)
+        logger.info("PDRNEW.INP.template not found - using JSON-only workflow")
     
     # Flag to track if PDR execution was skipped
     pdr_skipped = False
@@ -854,7 +864,7 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False):
             set_oniondir(spec)
             
             # Run onion model
-            run_onion(spec, job_id, tmp_dir)
+            run_onion(spec, job_id, tmp_dir, config=config)
             
             # Copy output files
             copy_onionoutput(spec, job_id)
