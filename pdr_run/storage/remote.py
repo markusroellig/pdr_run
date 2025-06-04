@@ -278,7 +278,8 @@ class SFTPStorage(RemoteStorage):
             
             # Ensure local directory exists
             local_dir = os.path.dirname(local_path)
-            os.makedirs(local_dir, exist_ok=True)
+            if local_dir:  # Only create directory if it's not empty
+                os.makedirs(local_dir, exist_ok=True)
             
             # Download file
             sftp.get(os.path.join(self.base_dir, remote_path), local_path)

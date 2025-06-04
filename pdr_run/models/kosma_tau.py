@@ -917,6 +917,7 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
         # Download CTRL_IND file for onion processing if it exists
         ctrl_ind_remote_path = os.path.join(job.model_name.model_path, 'pdrgrid', f'CTRL_IND{model}')
         try:
+            logger.info(f"Attempting to download CTRL_IND file from remote storage at: {ctrl_ind_remote_path}")
             storage.retrieve_file(ctrl_ind_remote_path, 'CTRL_IND')
             logger.info(f"Downloaded CTRL_IND file from remote storage")
         except Exception as e:
