@@ -94,13 +94,29 @@ from pdr_run.models.parameters import (
     from_par_to_string, from_string_to_par, from_par_to_string_log
 )
 from pdr_run.models.kosma_tau import run_kosma_tau
+from pdr_run.storage.base import get_storage_backend
 
 # Configure logger with more detail
 logger = logging.getLogger('dev')
 
-def setup_model_directories(model_path):
+def setup_model_directories(model_path, config=None):
     """Set up model storage directories."""
     logger.debug(f"Setting up model directories at {model_path}")
+
+    # Check if we're using remote storage
+    storage_backend = get_storage_backend(config)
+    logger.debug(f"Storage backend type: {type(storage_backend)}")
+    logger.debug(f"Storage backend class: {storage_backend.__class__.__name__}")
+
+    if hasattr(storage_backend, 'host'):
+        logger.debug("Using remote storage backend")
+        logger.debug(f"Remote host: {storage_backend.host}")
+        logger.debug(f"Remote user: {storage_backend.user}")
+        logger.debug(f"Remote base_dir: {storage_backend.base_dir}")
+    else:
+        logger.debug("Using local storage backend")
+        logger.debug(f"Local base_dir: {storage_backend.base_dir}")
+
     
     pdrgrid_path = os.path.join(model_path, 'pdrgrid')
     oniongrid_path = os.path.join(model_path, 'oniongrid')
@@ -600,7 +616,7 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
         create_dir(storage_base_dir)
     
     # Set up model directories
-    setup_model_directories(model_path)
+    setup_model_directories(model_path, config)
     
     # Generate parameter combinations
     param_combinations = generate_parameter_combinations(params)

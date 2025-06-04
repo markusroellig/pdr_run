@@ -95,40 +95,177 @@ class RemoteStorage(Storage):
 
 class SFTPStorage(RemoteStorage):
     """SFTP storage implementation."""
+
+    def __init__(self, host, user, password, base_dir):
+        """Initialize SFTP storage with extensive debugging."""
+        import logging
+        self.logger = logging.getLogger("dev")
+        
+        self.logger.debug("=== SFTP STORAGE INITIALIZATION ===")
+        self.logger.debug(f"Host: {host}")
+        self.logger.debug(f"User: {user}")
+        self.logger.debug(f"Password type: {type(password)}")
+        self.logger.debug(f"Password length: {len(password) if password else 0} chars")
+        self.logger.debug(f"Password is None: {password is None}")
+        self.logger.debug(f"Password is empty string: {password == ''}")
+        self.logger.debug(f"Password bool: {bool(password)}")
+        self.logger.debug(f"Base dir: {base_dir}")
+        
+        super().__init__(host, user, password, base_dir)
+        
+        # Test connection immediately with detailed logging
+        self.logger.debug("Testing SFTP connection...")
+        try:
+            self._test_connection()
+            self.logger.info("SFTP connection test successful")
+        except Exception as e:
+            self.logger.error(f"SFTP connection test failed: {e}")
+            raise
     
-    def store_file(self, local_path, remote_path):
-        """Store a file using SFTP."""
+    def _test_connection(self):
+        """Test SFTP connection with extensive debugging."""
+        import paramiko
+        
+        self.logger.debug("=== SFTP CONNECTION TEST ===")
+        self.logger.debug(f"Connecting to: {self.host}")
+        self.logger.debug(f"Username: {self.user}")
+        self.logger.debug(f"Password provided: {bool(self.password)}")
+        
+        # Set up paramiko logging
+        paramiko.util.log_to_file('/home/roellig/pdr/pdr/test_run/logs/paramiko.log', level=paramiko.util.DEBUG)
+        
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
         try:
+            self.logger.debug("Creating SSH connection...")
+            
+            # Try different authentication methods
+            if self.password:
+                self.logger.debug("Attempting password authentication")
+                client.connect(
+                    self.host, 
+                    username=self.user, 
+                    password=self.password,
+                    timeout=10,
+                    allow_agent=False,
+                    look_for_keys=False
+                )
+            else:
+                self.logger.debug("Attempting key-based authentication (no password provided)")
+                client.connect(
+                    self.host, 
+                    username=self.user,
+                    timeout=10
+                )
+            
+            self.logger.debug("SSH connection successful, opening SFTP channel...")
+            sftp = client.open_sftp()
+            
+            # Test base directory
+            self.logger.debug(f"Testing base directory: {self.base_dir}")
+            try:
+                sftp.stat(self.base_dir)
+                self.logger.debug(f"Base directory {self.base_dir} exists and is accessible")
+            except FileNotFoundError:
+                self.logger.warning(f"Base directory {self.base_dir} does not exist")
+            except PermissionError:
+                self.logger.error(f"Permission denied accessing {self.base_dir}")
+                
+            sftp.close()
+            self.logger.debug("SFTP connection test completed successfully")
+            
+        except paramiko.AuthenticationException as e:
+            self.logger.error(f"Authentication failed: {e}")
+            self.logger.error("Possible causes:")
+            self.logger.error("1. Incorrect password")
+            self.logger.error("2. Account locked or disabled")
+            self.logger.error("3. SSH keys required but not provided")
+            self.logger.error("4. Two-factor authentication required")
+            raise
+        except paramiko.SSHException as e:
+            self.logger.error(f"SSH connection failed: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Connection test failed: {e}")
+            raise
+        finally:
+            client.close()
+    
+    def store_file(self, local_path, remote_path):
+        """Store a file using SFTP with extensive debugging."""
+        self.logger.debug("=== SFTP STORE FILE ===")
+        self.logger.debug(f"Local path: {local_path}")
+        self.logger.debug(f"Remote path: {remote_path}")
+        self.logger.debug(f"Full remote path: {os.path.join(self.base_dir, remote_path)}")
+        
+        if not os.path.exists(local_path):
+            self.logger.error(f"Local file does not exist: {local_path}")
+            raise FileNotFoundError(f"Local file not found: {local_path}")
+            
+        file_size = os.path.getsize(local_path)
+        self.logger.debug(f"Local file size: {file_size} bytes")
+        
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        try:
+            self.logger.debug(f"Connecting to SFTP server {self.host}")
             client.connect(self.host, username=self.user, password=self.password)
             sftp = client.open_sftp()
             
             # Ensure directory exists
-            remote_dir = os.path.dirname(os.path.join(self.base_dir, remote_path))
-            try:
-                sftp.stat(remote_dir)
-            except FileNotFoundError:
-                # Create directory structure
-                dirs_to_create = []
-                temp_dir = remote_dir
-                while True:
-                    try:
-                        sftp.stat(temp_dir)
-                        break
-                    except FileNotFoundError:
-                        dirs_to_create.insert(0, temp_dir)
-                        temp_dir = os.path.dirname(temp_dir)
-                
-                for directory in dirs_to_create:
-                    sftp.mkdir(directory)
+            full_remote_path = os.path.join(self.base_dir, remote_path)
+            remote_dir = os.path.dirname(full_remote_path)
+            
+            self.logger.debug(f"Ensuring remote directory exists: {remote_dir}")
+            self._ensure_remote_directory(sftp, remote_dir)
             
             # Upload file
-            sftp.put(local_path, os.path.join(self.base_dir, remote_path))
+            self.logger.debug(f"Starting file upload to {full_remote_path}")
+            sftp.put(local_path, full_remote_path)
+            
+            # Verify upload
+            try:
+                remote_stat = sftp.stat(full_remote_path)
+                self.logger.debug(f"Upload successful - remote file size: {remote_stat.st_size} bytes")
+                if remote_stat.st_size != file_size:
+                    self.logger.warning(f"File size mismatch: local={file_size}, remote={remote_stat.st_size}")
+            except Exception as e:
+                self.logger.error(f"Failed to verify uploaded file: {e}")
+                
+            self.logger.info(f"Successfully stored file via SFTP: {local_path} -> {full_remote_path}")
             return True
+            
+        except Exception as e:
+            self.logger.error(f"SFTP store_file failed: {e}")
+            import traceback
+            self.logger.debug(f"Full traceback: {traceback.format_exc()}")
+            return False
         finally:
             client.close()
+    
+    def _ensure_remote_directory(self, sftp, remote_dir):
+        """Ensure remote directory exists with debugging."""
+        try:
+            sftp.stat(remote_dir)
+            self.logger.debug(f"Remote directory already exists: {remote_dir}")
+        except FileNotFoundError:
+            self.logger.debug(f"Creating remote directory: {remote_dir}")
+            # Create directory structure
+            dirs_to_create = []
+            temp_dir = remote_dir
+            while True:
+                try:
+                    sftp.stat(temp_dir)
+                    break
+                except FileNotFoundError:
+                    dirs_to_create.insert(0, temp_dir)
+                    temp_dir = os.path.dirname(temp_dir)
+            
+            for directory in dirs_to_create:
+                self.logger.debug(f"Creating directory: {directory}")
+                sftp.mkdir(directory)
     
     def retrieve_file(self, remote_path, local_path):
         """Retrieve a file using SFTP."""

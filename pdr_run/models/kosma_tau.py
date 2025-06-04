@@ -514,17 +514,21 @@ def run_pdr(job_id, tmp_dir='./'):
             update_job_status(job_id, 'ERROR', session)
             raise
 
-def copy_pdroutput(job_id):
+def copy_pdroutput(job_id, config=None):
     """Copy PDR output files to the model directory.
     
     Args:
         job_id (int): Job ID
     """
+    from pdr_run.storage.base import get_storage_backend
     session = get_session()
     job = session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
+    
+    # Get the storage backend
+    storage = get_storage_backend(config)
     
     model = job.model_job_name
     model_path = job.model_name.model_path
@@ -541,78 +545,112 @@ def copy_pdroutput(job_id):
     
     # Copy output files to the model directory
     if os.path.exists(os.path.join('pdroutput', 'TEXTOUT')):
-        move_files(
-            os.path.join('pdroutput', 'TEXTOUT'),
-            os.path.join(model_path, 'pdrgrid', text_out_name)
-        )
-        job.log_file = os.path.join(model_path, 'pdrgrid', text_out_name)
-        job.output_textout_file = os.path.join(model_path, 'pdrgrid', text_out_name)
+         # Local source path
+        local_source = os.path.join('pdroutput', 'TEXTOUT')
+        
+        # Remote destination path (relative to storage base_dir)
+        remote_dest = os.path.join(model_path, 'pdrgrid', text_out_name)
+        
+        # Store file using backend (works with local, SFTP, S3, etc.)
+        storage.store_file(local_source, remote_dest)
+        
+        # Update job with storage-aware path
+        job.log_file = remote_dest  # Now this path works with any backend
+        job.output_textout_file = remote_dest
+
     
     if os.path.exists(os.path.join('pdroutput', 'pdrout.hdf')):
-        move_files(
-            os.path.join('pdroutput', 'pdrout.hdf'),
-            os.path.join(model_path, 'pdrgrid', hdf_out_name)
-        )
+        local_source = os.path.join('pdroutput', 'pdrout.hdf')
+        remote_dest  = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+        storage.store_file(local_source, remote_dest)
         job.output_hdf4_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
     
     if os.path.exists(os.path.join('pdroutput', 'pdrstruct_s.hdf5')):
-        move_files(
-            os.path.join('pdroutput', 'pdrstruct_s.hdf5'),
-            os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name )
-        )
-        job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name )
-    
+        local_source = os.path.join('pdroutput', 'pdrstruct_s.hdf5')
+        remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+        storage.store_file(local_source, remote_dest)
+        job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+
     if os.path.exists(os.path.join('pdroutput', 'pdrchem_c.hdf5')):
-        move_files(
-            os.path.join('pdroutput', 'pdrchem_c.hdf5'),
-            os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name )
-        )
-        job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name )
-    
+        local_source = os.path.join('pdroutput', 'pdrchem_c.hdf5')
+        remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+        storage.store_file(local_source, remote_dest)
+        job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+
     if os.path.exists(os.path.join('pdroutput', 'chemchk.out')):
-        move_files(
-            os.path.join('pdroutput', 'chemchk.out'),
-            os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-        )
+        local_source = os.path.join('pdroutput', 'chemchk.out')
+        remote_dest = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
+        storage.store_file(local_source, remote_dest)
         job.output_chemchk_file = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
     
     if os.path.exists('./Out'):
-        make_tarfile(
-            os.path.join(model_path, 'pdrgrid', mrt_out_name),
-            './Out'
-        )
+        # Create tar file locally first
+        local_tar = os.path.join('/tmp', mrt_out_name)
+        make_tarfile(local_tar, './Out')
+        
+        # Then upload to storage
+        remote_dest = os.path.join(model_path, 'pdrgrid', mrt_out_name)
+        storage.store_file(local_tar, remote_dest)
+        
+        # Clean up local tar file
+        os.unlink(local_tar)
         job.output_mcdrt_zip_file = os.path.join(model_path, 'pdrgrid', mrt_out_name)
     
     if os.path.exists('PDRNEW.INP'):
-        shutil.copyfile(
-            'PDRNEW.INP',
-            os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-        )
+        local_source = os.path.join('PDRNEW.INP')
+        remote_dest = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
+        storage.store_file(local_source, remote_dest)
+
         job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
     
     if os.path.exists('pdr_config.json'):
-        shutil.copyfile(
-            'pdr_config.json',
-            os.path.join(model_path, 'pdrgrid', json_file_name)
-        )
+        local_source = 'pdr_config.json'
+        remote_dest = os.path.join(model_path, 'pdrgrid', json_file_name)
+        storage.store_file(local_source, remote_dest)
         job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
-    
+
     if os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
-        shutil.copyfile(
-            os.path.join('pdroutput', 'CTRL_IND'),
-            os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
-        )
+        local_source = os.path.join('pdroutput', 'CTRL_IND')
+        remote_dest = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
+        storage.store_file(local_source, remote_dest)
+        # copy for CTRL_IND onionexe
         shutil.copyfile(
             os.path.join('pdroutput', 'CTRL_IND'),
             'CTRL_IND'
         )
-        job.output_ctrl_ind_file = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
-    
+       
     session.commit()
     
-    # Create HDFFile entry in the database
-    sha_key = get_digest(os.path.join(model_path, 'pdrgrid', hdf_out_name))
-    
+
+    # Calculate SHA256 for local files (before they get cleaned up)
+    local_hdf_path = 'pdroutput/pdrout.hdf'
+    local_hdf5_path = 'pdroutput/pdrstruct_s.hdf5'
+    local_hdf5_chem_path = 'pdroutput/pdrchem_c.hdf5'
+
+    if os.path.exists(local_hdf_path):
+        sha_key = get_digest(local_hdf_path)
+        local_hdf_mtime = os.path.getmtime(local_hdf_path)
+        local_hdf_size = os.path.getsize(local_hdf_path)
+    else:
+        logger.error(f"Cannot find local HDF file: {local_hdf_path}")
+        return
+
+    if os.path.exists(local_hdf5_path):
+        sha_key_hdf5 = get_digest(local_hdf5_path)
+        local_hdf5_mtime = os.path.getmtime(local_hdf5_path)
+        local_hdf5_size = os.path.getsize(local_hdf5_path)
+    else:
+        logger.error(f"Cannot find local HDF5 file: {local_hdf5_path}")
+        return
+
+    if os.path.exists(local_hdf5_chem_path):
+        sha_key_hdf5_c = get_digest(local_hdf5_chem_path)
+        local_hdf5_chem_mtime = os.path.getmtime(local_hdf5_chem_path)
+        local_hdf5_chem_size = os.path.getsize(local_hdf5_chem_path)
+    else:
+        logger.error(f"Cannot find local HDF5 chemistry file: {local_hdf5_chem_path}")
+        return
+
     # Use session.query().filter_by().first() instead of session.query().get() for complex queries
     instance = session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
     
@@ -627,26 +665,23 @@ def copy_pdroutput(job_id):
             file_name=hdf_out_name,
             full_path=os.path.join(model_path, 'pdrgrid', hdf_out_name),
             path=os.path.join(model_path, 'pdrgrid'),
-            modification_time=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf_out_name))),
+            modification_time=datetime.datetime.fromtimestamp(local_hdf_mtime),
             sha256_sum=sha_key,
-            file_size=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf_out_name)),
+            file_size=local_hdf_size,
             #HDF 5 structure file
             file_name_hdf5_s=hdf5_struct_out_name,
             full_path_hdf5_s=os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name),
             path_hdf5_s=os.path.join(model_path, 'pdrgrid'),
-            modification_time_hdf5_s=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name))),
-            sha256_sum_hdf5_s=sha_key,
-            file_size_hdf5_s=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)),
+            modification_time_hdf5_s=datetime.datetime.fromtimestamp(local_hdf5_mtime),
+            sha256_sum_hdf5_s=sha_key_hdf5,
+            file_size_hdf5_s=local_hdf5_size,
             #hdf5 chemistry file
             file_name_hdf5_c=hdf5_chem_out_name,
             full_path_hdf5_c=os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name),
             path_hdf5_c=os.path.join(model_path, 'pdrgrid'),
-            modification_time_hdf5_c=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name))),
-            sha256_sum_hdf5_c=sha_key,
-            file_size_hdf5_c=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)),
+            modification_time_hdf5_c=datetime.datetime.fromtimestamp(local_hdf5_chem_mtime),
+            sha256_sum_hdf5_c=sha_key_hdf5_c,
+            file_size_hdf5_c=local_hdf5_chem_size,
             )
 
 def set_oniondir(spec):
@@ -685,6 +720,9 @@ def run_onion(spec, job_id, tmp_dir='./', config=None):
         tmp_dir (str): Temporary directory path
         config (dict): Configuration dictionary containing executable name
     """
+    from pdr_run.storage.base import get_storage_backend
+
+    storage = get_storage_backend(config)
     session = get_session()
     job =  session.get(PDRModelJob, job_id)
     
@@ -759,13 +797,16 @@ def run_onion(spec, job_id, tmp_dir='./', config=None):
     
     logger.info(f"Completed onion run for species {spec}")
 
-def copy_onionoutput(spec, job_id):
+def copy_onionoutput(spec, job_id, config=None):
     """Copy onion output files to the model directory.
     
     Args:
         spec (str): Species name
         job_id (int): Job ID
     """
+    from pdr_run.storage.base import get_storage_backend
+
+    storage = get_storage_backend(config)
     session = get_session()
     job = session.get(PDRModelJob, job_id)
 
@@ -787,12 +828,10 @@ def copy_onionoutput(spec, job_id):
     for f in onion_files:
         path = os.path.join('onionoutput', f)
         if os.path.exists(path):
-            move_files(
-                path,
-                os.path.join(model_path, 'oniongrid', 'ONION' + model + '.' + f)
-            )
+            remote_dest = os.path.join(model_path, 'oniongrid', 'ONION' + model + '.' + f)
+            storage.store_file(path, remote_dest)
     
-    shutil.copyfile(
+    storage.store_file(
         os.path.join('onionoutput', 'TEXTOUT'),
         os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec)
     )
@@ -865,17 +904,16 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
             
             # Run onion model
             run_onion(spec, job_id, tmp_dir, config=config)
-            
             # Copy output files
-            copy_onionoutput(spec, job_id)
+            copy_onionoutput(spec, job_id, config=config)
     else:
         logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
     
     # Copy output files - moved after the onion run because ONION modifies the HDF5 file
     # Only copy if we actually ran the PDR model
     if not pdr_skipped:
-        copy_pdroutput(job_id)
-    
+        copy_pdroutput(job_id, config=config)
+
     logger.info(f"Completed KOSMA-tau model run for job {job_id}")
 
 def update_db_pdr_output_entries(job_id, session=None):
