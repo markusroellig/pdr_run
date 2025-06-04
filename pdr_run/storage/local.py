@@ -93,3 +93,19 @@ class LocalStorage(Storage):
         if not os.path.exists(full_path):
             return []
         return os.listdir(full_path)
+    
+    def file_exists(self, path):
+        """Check if a file exists locally.
+        
+        Args:
+            path (str): Path to check
+            
+        Returns:
+            bool: True if file exists, False otherwise
+        """
+        if not path.startswith('/'):
+            full_path = os.path.join(self.base_dir, path)
+        else:
+            full_path = path
+            
+        return os.path.isfile(full_path)

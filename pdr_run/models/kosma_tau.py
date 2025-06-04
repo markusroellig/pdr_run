@@ -849,8 +849,11 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     """
     logger.info(f"Running KOSMA-tau model for job {job_id}")
     
+    # Import storage backend here to avoid circular imports
+    from pdr_run.storage.base import get_storage_backend
+    
     session = get_session()
-    job = session.get(PDRModelJob,job_id)
+    job = session.get(PDRModelJob, job_id)
     
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
@@ -861,6 +864,8 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     logger.info(f"MODEL is {model}")
     hdf5_out_name = 'pdrstruct' + model + '.hdf5' # check if HDF5 file already exists 
     
+    # Get storage backend to check for existing files
+    storage = get_storage_backend(config)
     
     # Primary workflow: Create JSON config (always)
     create_json_from_job_id(job_id, session)
@@ -875,16 +880,48 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     # Flag to track if PDR execution was skipped
     pdr_skipped = False
     
-    # Check if model already exists
-    hdf_storage_dir = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
-    if os.path.isfile(hdf_storage_dir):
-        logger.warning(f"Model {model} exists, skipping PDR execution")
+    # Check if model already exists using storage backend
+    hdf_storage_path = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
+    
+    # Use storage backend to check file existence
+    try:
+        if hasattr(storage, 'file_exists'):
+            # If storage backend has a file_exists method, use it
+            model_exists = storage.file_exists(hdf_storage_path)
+        else:
+            # Fallback: try to get file info (this will raise an exception if file doesn't exist)
+            try:
+                # This is a simple check - try to list the directory and see if our file is there
+                parent_dir = os.path.dirname(hdf_storage_path)
+                files = storage.list_files(parent_dir)
+                model_exists = os.path.basename(hdf_storage_path) in files
+            except:
+                # If we can't list files or any other error, assume file doesn't exist
+                model_exists = False
+                
+        logger.debug(f"Checking for existing model at: {hdf_storage_path}")
+        logger.debug(f"Model exists: {model_exists}")
+        
+    except Exception as e:
+        logger.warning(f"Could not check for existing model: {e}")
+        model_exists = False
+    
+    if model_exists:
+        logger.warning(f"Model {model} exists remotely, skipping PDR execution")
         
         # Update database entries
         update_db_pdr_output_entries(job_id, session)
 
         job = session.get(PDRModelJob, job_id)
-        shutil.copyfile(job.output_ctrl_ind_file, 'CTRL_IND')
+        
+        # Download CTRL_IND file for onion processing if it exists
+        ctrl_ind_remote_path = os.path.join(job.model_name.model_path, 'pdrgrid', f'CTRL_IND{model}')
+        try:
+            storage.retrieve_file(ctrl_ind_remote_path, 'CTRL_IND')
+            logger.info(f"Downloaded CTRL_IND file from remote storage")
+        except Exception as e:
+            logger.warning(f"Could not download CTRL_IND file: {e}")
+            
         update_job_status(job_id, 'skipped', session)
         pdr_skipped = True
     else:
@@ -916,109 +953,143 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
 
     logger.info(f"Completed KOSMA-tau model run for job {job_id}")
 
-def update_db_pdr_output_entries(job_id, session=None):
-    """Update database entries for PDR output files.
+def update_db_pdr_output_entries(job_id, session):
+    """Update database entries for PDR output files when skipping execution.
+    
+    This function is called when a model already exists remotely and we're
+    skipping the PDR execution. It creates database entries with placeholder
+    values since we can't access the remote files directly.
     
     Args:
         job_id (int): Job ID
         session: Database session
     """
-    if session is None:
-        session = get_session()
-
-    job = session.get(PDRModelJob, job_id)
-
-    if not job:
-        raise ValueError(f"Job with ID {job_id} not found")
+    from pdr_run.storage.base import get_storage_backend
     
+    job = session.get(PDRModelJob, job_id)
+    if not job:
+        logger.error(f"Job with ID {job_id} not found")
+        return
+        
     model = job.model_job_name
     model_path = job.model_name.model_path
     
-    hdf_out_name = 'pdr' + model + '.hdf'
-    hdf5_struct_out_name = 'pdrstruct' + model + '.hdf5'
-    hdf5_chem_out_name = 'pdrchem' + model + '.hdf5'
-    text_out_name = 'TEXTOUT' + model
-    chemchk_out_name = 'chemchk' + model + '.out'
-    mrt_out_name = 'MCDRT' + model + '.tar.gz'
-    pdrnew_inp_file_name = 'PDRNEW' + model + '.INP'
-    json_file_name = 'pdr_config' + model + '.json'
-    ctrl_ind_file_name = 'CTRL_IND' + model
+    # Define file names
+    hdf_out_name = f'pdr{model}.hdf'
+    hdf5_struct_out_name = f'pdrstruct{model}.hdf5'
+    hdf5_chem_out_name = f'pdrchem{model}.hdf5'
+    text_out_name = f'TEXTOUT{model}'
+    chemchk_out_name = f'chemchk{model}.out'
+    mrt_out_name = f'MCDRT{model}.tar.gz'
+    pdrnew_inp_file_name = f'PDRNEW{model}.INP'
+    json_file_name = f'pdr_config{model}.json'
+    ctrl_ind_file_name = f'CTRL_IND{model}'
     
-    # Update job file paths
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', text_out_name)):
-        job.log_file = os.path.join(model_path, 'pdrgrid', text_out_name)
-        job.output_textout_file = os.path.join(model_path, 'pdrgrid', text_out_name)
+    logger.info(f"Creating database entries for existing remote model {model}")
     
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', hdf_out_name)):
-        job.output_hdf4_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+    # Use current timestamp as placeholder
+    import datetime
+    current_time = datetime.datetime.now()
     
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)):
+    # Check if HDF file entry already exists
+    existing_hdf = session.query(HDFFile).filter_by(
+        parameter_id=job.kosmatau_parameters_id,
+        model_name_id=job.model_name_id
+    ).first()
+    
+    if existing_hdf:
+        logger.info(f"Database entry for model {model} already exists, updating paths")
+        # Update the existing entry with current paths
+        existing_hdf.full_path = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+        existing_hdf.full_path_hdf5_s = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+        existing_hdf.full_path_hdf5_c = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+        
+        # Update other paths if they exist as fields
+        if hasattr(existing_hdf, 'full_path_textout'):
+            existing_hdf.full_path_textout = os.path.join(model_path, 'pdrgrid', text_out_name)
+        if hasattr(existing_hdf, 'full_path_chemchk'):
+            existing_hdf.full_path_chemchk = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
+        if hasattr(existing_hdf, 'full_path_mcdrt'):
+            existing_hdf.full_path_mcdrt = os.path.join(model_path, 'pdrgrid', mrt_out_name)
+        if hasattr(existing_hdf, 'full_path_config'):
+            existing_hdf.full_path_config = os.path.join(model_path, 'pdrgrid', json_file_name)
+        if hasattr(existing_hdf, 'full_path_ctrl_ind'):
+            existing_hdf.full_path_ctrl_ind = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
+    else:
+        logger.info(f"Creating new database entry for model {model}")
+        
+        # Create a minimal HDFFile entry with only the required/known fields
+        hdf_file_args = {
+            'parameter_id': job.kosmatau_parameters_id,
+            'model_name_id': job.model_name_id,
+            'file_name': hdf_out_name,
+            'full_path': os.path.join(model_path, 'pdrgrid', hdf_out_name),
+            'path': os.path.join(model_path, 'pdrgrid'),
+            'modification_time': current_time,
+            'sha256_sum': "remote_file_no_local_hash",
+            'file_size': 0,  # Placeholder value
+            # HDF5 structure file fields (these seem to exist based on copy_pdroutput)
+            'file_name_hdf5_s': hdf5_struct_out_name,
+            'full_path_hdf5_s': os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name),
+            'path_hdf5_s': os.path.join(model_path, 'pdrgrid'),
+            'modification_time_hdf5_s': current_time,
+            'sha256_sum_hdf5_s': "remote_file_no_local_hash",
+            'file_size_hdf5_s': 0,  # Placeholder value
+            # HDF5 chemistry file fields (these seem to exist based on copy_pdroutput)
+            'file_name_hdf5_c': hdf5_chem_out_name,
+            'full_path_hdf5_c': os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name),
+            'path_hdf5_c': os.path.join(model_path, 'pdrgrid'),
+            'modification_time_hdf5_c': current_time,
+            'sha256_sum_hdf5_c': "remote_file_no_local_hash",
+            'file_size_hdf5_c': 0,  # Placeholder value
+        }
+        
+        # Try to create the HDFFile with these arguments
+        try:
+            hdf_file = HDFFile(**hdf_file_args)
+            session.add(hdf_file)
+        except TypeError as e:
+            logger.error(f"Error creating HDFFile: {e}")
+            # Create with minimal required fields only
+            minimal_args = {
+                'parameter_id': job.kosmatau_parameters_id,
+                'model_name_id': job.model_name_id,
+                'file_name': hdf_out_name,
+                'full_path': os.path.join(model_path, 'pdrgrid', hdf_out_name),
+                'path': os.path.join(model_path, 'pdrgrid'),
+                'modification_time': current_time,
+                'sha256_sum': "remote_file_no_local_hash",
+                'file_size': 0,
+            }
+            hdf_file = HDFFile(**minimal_args)
+            session.add(hdf_file)
+    
+    # Update job output file paths (only update fields that exist)
+    job.output_hdf_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+    
+    # Check if these attributes exist before setting them
+    if hasattr(job, 'output_hdf5_struct_file'):
         job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
-
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)):
+    if hasattr(job, 'output_hdf5_chem_file'):
         job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
-
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', chemchk_out_name)):
+    if hasattr(job, 'output_textout_file'):
+        job.output_textout_file = os.path.join(model_path, 'pdrgrid', text_out_name)
+    if hasattr(job, 'output_chemchk_file'):
         job.output_chemchk_file = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-    
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', mrt_out_name)):
+    if hasattr(job, 'output_mcdrt_zip_file'):
         job.output_mcdrt_zip_file = os.path.join(model_path, 'pdrgrid', mrt_out_name)
-    
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)):
-        job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', json_file_name)):
-        job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
-    
-    if os.path.exists(os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)):
+    if hasattr(job, 'output_config_file'):
+        job.output_config_file = os.path.join(model_path, 'pdrgrid', json_file_name)
+    if hasattr(job, 'output_ctrl_ind_file'):
         job.output_ctrl_ind_file = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
     
-    session.commit()
-    
-    # Create HDFFile entry in the database
-    from pdr_run.io.file_manager import get_digest
-    
-    sha_key = get_digest(os.path.join(model_path, 'pdrgrid', hdf_out_name))
-    
-    # Use session.query().filter_by().first() instead of session.query().get() for complex queries
-    instance = session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
-    
-    if not instance:
-        hdf = get_or_create(
-            session,
-            HDFFile,
-            job_id=job_id,
-            pdrexe_id=job.kosmatau_executable_id,
-            parameter_id=job.kosmatau_parameters_id,
-            model_name_id=job.model_name_id,
-            file_name=hdf_out_name,
-            full_path=os.path.join(model_path, 'pdrgrid', hdf_out_name),
-            path=os.path.join(model_path, 'pdrgrid'),
-            modification_time=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf_out_name))),
-            sha256_sum=sha_key,
-            file_size=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf_out_name)),
-            #HDF 5 structure file
-            file_name_hdf5_s=hdf5_struct_out_name,
-            full_path_hdf5_s=os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name),
-            path_hdf5_s=os.path.join(model_path, 'pdrgrid'),
-            modification_time_hdf5_s=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name))),
-            sha256_sum_hdf5_s=sha_key,
-            file_size_hdf5_s=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)),
-            #hdf5 chemistry file
-            file_name_hdf5_c=hdf5_chem_out_name,
-            full_path_hdf5_c=os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name),
-            path_hdf5_c=os.path.join(model_path, 'pdrgrid'),
-            modification_time_hdf5_c=datetime.datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name))),
-            sha256_sum_hdf5_c=sha_key,
-            file_size_hdf5_c=os.path.getsize(os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name))
-
-        )
-    else:
-        logger.info(f'HDF file entry already exists. ID: {instance.id}')
-
+    try:
+        session.commit()
+        logger.info(f"Successfully updated database entries for existing model {model}")
+    except Exception as e:
+        logger.error(f"Failed to update database entries: {e}")
+        session.rollback()
+        raise
 
 def replace_template_variables(template_content, parameters):
     """Replace variables in template with parameter values.

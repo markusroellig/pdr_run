@@ -304,6 +304,38 @@ class SFTPStorage(RemoteStorage):
         finally:
             client.close()
 
+    def file_exists(self, remote_path):
+        """Check if a file exists on the remote server.
+        
+        Args:
+            remote_path (str): Path to check on the remote server
+            
+        Returns:
+            bool: True if file exists, False otherwise
+        """
+        try:
+            with paramiko.SSHClient() as ssh:
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(self.host, username=self.user, password=self.password)
+                
+                with ssh.open_sftp() as sftp:
+                    # Convert relative path to absolute
+                    if not remote_path.startswith('/'):
+                        full_path = os.path.join(self.base_dir, remote_path)
+                    else:
+                        full_path = remote_path
+                    
+                    try:
+                        # Try to get file stats - if successful, file exists
+                        sftp.stat(full_path)
+                        return True
+                    except FileNotFoundError:
+                        return False
+                        
+        except Exception as e:
+            self.logger.debug(f"Error checking file existence: {e}")
+            return False
+
 class RCloneStorage(Storage):
     """RClone-based remote storage implementation.
     
