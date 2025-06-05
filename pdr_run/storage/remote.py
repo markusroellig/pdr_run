@@ -337,22 +337,13 @@ class SFTPStorage(RemoteStorage):
             self.logger.debug(f"Error checking file existence: {e}")
             return False
 
+# ...existing code...
+
 class RCloneStorage(Storage):
-    """RClone-based remote storage implementation.
-    
-    This class implements the Storage interface using rclone commands to
-    interact with various remote storage systems supported by rclone.
-    """
+    """RClone-based remote storage implementation."""
     
     def __init__(self, config):
-        """Initialize RClone storage.
-        
-        Args:
-            config (dict): Configuration dictionary containing:
-                - base_dir: Base directory for local operations
-                - rclone_remote: Name of the rclone remote to use (e.g., 'kosmatau')
-                - mount_point (optional): Directory to use for mounting the remote
-        """
+        """Initialize RClone storage."""
         self.base_dir = config.get('base_dir', './data')
         self.remote = config.get('rclone_remote', 'default')
         self.mount_point = config.get('mount_point', os.path.join(self.base_dir, 'mnt'))
@@ -361,6 +352,15 @@ class RCloneStorage(Storage):
         # Add logger for consistency with SFTPStorage
         self.logger = logging.getLogger("dev")
         
+        # Parse remote configuration
+        if ':' in self.remote:
+            # Remote includes path: "remote_name:/path/to/base"
+            self.remote_name, self.remote_base_path = self.remote.split(':', 1)
+        else:
+            # Remote is just the name: "remote_name"
+            self.remote_name = self.remote
+            self.remote_base_path = ''
+        
         # Verify rclone is installed
         try:
             subprocess.run(['rclone', 'version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -368,179 +368,163 @@ class RCloneStorage(Storage):
             logger.error("rclone is not installed or not in PATH")
             raise RuntimeError("rclone is not installed or not in PATH")
     
-    def mount(self):
-        """Mount the remote storage locally.
-        
-        Returns:
-            bool: True if mount was successful, False otherwise
-        """
-        if not os.path.exists(self.mount_point):
-            os.makedirs(self.mount_point, exist_ok=True)
-            
-        try:
-            cmd = [
-                'rclone', 'mount', 
-                f"{self.remote}:", 
-                self.mount_point,
-                '--daemon',
-                '--no-check-certificate'
-            ]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logger.info(f"Mounted {self.remote} at {self.mount_point}")
-            return True
-        except subprocess.SubprocessError as e:
-            logger.error(f"Failed to mount remote storage: {e}")
-            return False
-    
-    def umount(self):
-        """Unmount the remote storage.
-        
-        Returns:
-            bool: True if unmount was successful, False otherwise
-        """
-        try:
-            subprocess.run(['fusermount', '-u', self.mount_point], check=True, 
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logger.info(f"Unmounted {self.mount_point}")
-            return True
-        except subprocess.SubprocessError as e:
-            logger.error(f"Failed to unmount remote storage: {e}")
-            return False
+    def _get_full_remote_path(self, remote_path):
+        """Construct full remote path combining base path and relative path."""
+        if self.remote_base_path:
+            # Join base path with remote path
+            full_path = os.path.join(self.remote_base_path, remote_path).replace('\\', '/')
+            return f"{self.remote_name}:{full_path}"
+        else:
+            return f"{self.remote_name}:{remote_path}"
     
     def store_file(self, local_path, remote_path):
-        """Store a file to remote storage using rclone.
-        
-        Args:
-            local_path (str): Source file path on the local filesystem
-            remote_path (str): Destination path within the remote storage system
-                              (relative to base_dir)
-                              
-        Returns:
-            bool: True if the file was successfully stored, False otherwise
-        """
+        """Store a file to remote storage using rclone with exact filename control."""
         try:
+            full_remote_path = self._get_full_remote_path(remote_path)
+            
+            # Get the target directory and filename
+            remote_dir = os.path.dirname(full_remote_path.split(':', 1)[1])
+            target_filename = os.path.basename(remote_path)
+            source_filename = os.path.basename(local_path)
+            
             # Ensure remote directory exists
-            remote_dir = os.path.dirname(remote_path)
             if remote_dir:
-                mkdir_cmd = ['rclone', 'mkdir', f"{self.remote}:{remote_dir}"]
+                mkdir_cmd = ['rclone', 'mkdir', f"{self.remote_name}:{remote_dir}"]
                 subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            # Copy the file
-            cmd = [
-                'rclone', 'copy', 
-                local_path, 
-                f"{self.remote}:{remote_path}"
-            ]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logger.info(f"Copied {local_path} to {self.remote}:{remote_path}")
+            # If target filename differs from source, we need to handle rename
+            if target_filename != source_filename:
+                # Strategy: Copy to temp location, then move to final name
+                temp_remote_dir = f"{self.remote_name}:{remote_dir}" if remote_dir else f"{self.remote_name}:"
+                
+                # First copy the file to the directory
+                cmd = ['rclone', 'copy', local_path, temp_remote_dir]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    self.logger.error(f"RClone copy failed: {result.stderr}")
+                    return False
+                
+                # Now move from source filename to target filename
+                old_path = f"{self.remote_name}:{os.path.join(remote_dir, source_filename) if remote_dir else source_filename}"
+                new_path = full_remote_path
+                
+                move_cmd = ['rclone', 'moveto', old_path, new_path]
+                result = subprocess.run(move_cmd, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    self.logger.error(f"RClone rename failed: {result.stderr}")
+                    # Try to clean up the original file
+                    try:
+                        subprocess.run(['rclone', 'delete', old_path], 
+                                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except:
+                        pass
+                    return False
+            else:
+                # Filenames match, simple copy to directory
+                target_remote_dir = f"{self.remote_name}:{remote_dir}" if remote_dir else f"{self.remote_name}:"
+                cmd = ['rclone', 'copy', local_path, target_remote_dir]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    self.logger.error(f"RClone copy failed: {result.stderr}")
+                    return False
+            
+            self.logger.info(f"Stored {local_path} as {full_remote_path}")
             return True
+            
         except subprocess.SubprocessError as e:
-            logger.error(f"Failed to upload file with rclone: {e}")
+            self.logger.error(f"Failed to upload file with rclone: {e}")
             return False
-    
+        except Exception as e:
+            self.logger.error(f"Unexpected error in store_file: {e}")
+            return False
+
     def retrieve_file(self, remote_path, local_path):
-        """Download a file from remote storage using rclone.
-        
-        Args:
-            remote_path (str): Path to the file within the remote storage system
-                              (relative to base_dir)
-            local_path (str): Destination path where the file should be saved
-                             on the local filesystem
-                             
-        Returns:
-            bool: True if the file was successfully retrieved, False otherwise
-        """
+        """Download a file from remote storage using rclone."""
         try:
+            full_remote_path = self._get_full_remote_path(remote_path)
+            
             # Ensure local directory exists
             local_dir = os.path.dirname(local_path)
             if local_dir:
                 os.makedirs(local_dir, exist_ok=True)
             
-            # Copy the file
-            cmd = [
-                'rclone', 'copy',
-                f"{self.remote}:{remote_path}",
-                local_path
-            ]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            logger.info(f"Downloaded {self.remote}:{remote_path} to {local_path}")
+            # Use rclone copyto for exact file-to-file copy
+            cmd = ['rclone', 'copyto', full_remote_path, local_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                self.logger.error(f"RClone retrieve failed: {result.stderr}")
+                return False
+                
+            self.logger.info(f"Retrieved {full_remote_path} to {local_path}")
             return True
+            
         except subprocess.SubprocessError as e:
-            logger.error(f"Failed to download file with rclone: {e}")
+            self.logger.error(f"Failed to download file with rclone: {e}")
             return False
-    
+        except Exception as e:
+            self.logger.error(f"Unexpected error in retrieve_file: {e}")
+            return False
+
     def list_files(self, path):
-        """List files in remote storage using rclone.
-        
-        Args:
-            path (str): Directory path within the remote storage system to list
-                       (relative to base_dir)
-                       
-        Returns:
-            list: List of filenames (strings) in the specified directory
-        """
+        """List files in remote storage using rclone."""
         try:
-            cmd = [
-                'rclone', 'lsf', '--format=ps',
-                f"{self.remote}:{path}"
-            ]
-            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   universal_newlines=True)
+            full_remote_path = self._get_full_remote_path(path)
+            
+            # Use simple lsf which just returns filenames - much cleaner!
+            cmd = ['rclone', 'lsf', full_remote_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to list files with rclone: {result.stderr}")
+                return []
             
             # Split the output into lines and strip whitespace
             files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             return files
+            
         except subprocess.SubprocessError as e:
-            logger.error(f"Failed to list files with rclone: {e}")
+            self.logger.error(f"Failed to list files with rclone: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error in list_files: {e}")
             return []
 
     def sync_directory(self, local_dir, remote_dir):
-        """Synchronize an entire directory to remote storage.
-        
-        Args:
-            local_dir (str): Source directory path on local filesystem
-            remote_dir (str): Destination directory path within remote storage
-            
-        Returns:
-            bool: True if synchronization was successful, False otherwise
-        """
+        """Synchronize an entire directory to remote storage."""
         try:
+            full_remote_path = self._get_full_remote_path(remote_dir)
+            
             # Ensure remote directory exists
-            mkdir_cmd = ['rclone', 'mkdir', f"{self.remote}:{remote_dir}"]
+            mkdir_cmd = ['rclone', 'mkdir', full_remote_path]
             subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
             # Sync the directory
-            cmd = [
-                'rclone', 'copy', 
-                local_dir, 
-                f"{self.remote}:{remote_dir}"
-            ]
-            with open(os.path.join(self.base_dir, "rclone.log"), "a+") as log_file:
-                subprocess.run(cmd, check=True, stdout=log_file, stderr=log_file)
+            cmd = ['rclone', 'copy', local_dir, full_remote_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
-            logger.info(f"Synchronized {local_dir} to {self.remote}:{remote_dir}")
+            if result.returncode != 0:
+                self.logger.error(f"RClone sync failed: {result.stderr}")
+                return False
+            
+            self.logger.info(f"Synchronized {local_dir} to {full_remote_path}")
             return True
+            
         except Exception as e:
-            logger.error(f"Failed to sync directory: {str(e)}", exc_info=True)
+            self.logger.error(f"Failed to sync directory: {str(e)}", exc_info=True)
             return False
     
     def file_exists(self, remote_path):
-        """Check if a file exists on the remote server using rclone.
-        
-        Args:
-            remote_path (str): Path to check on the remote server
-            
-        Returns:
-            bool: True if file exists, False otherwise
-        """
+        """Check if a file exists on the remote server using rclone."""
         try:
+            full_remote_path = self._get_full_remote_path(remote_path)
+            
             # Use rclone lsf to check if the specific file exists
-            cmd = [
-                'rclone', 'lsf', 
-                f"{self.remote}:{remote_path}"
-            ]
-            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   universal_newlines=True)
+            cmd = ['rclone', 'lsf', full_remote_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
             # If lsf returns output, the file exists
             return bool(result.stdout.strip())

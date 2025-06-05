@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 logger = logging.getLogger("dev")
 
 def get_storage_backend(config=None):
-    """Get appropriate storage backend based on config or environment variables.
+    """Get the appropriate storage backend based on configuration.
     
     Args:
         config (dict, optional): Storage configuration from config file
@@ -72,6 +72,23 @@ def get_storage_backend(config=None):
 
         logger.debug(f"Creating SFTPStorage({host}, {user}, '***', {base_dir})")
         return SFTPStorage(host, user, password, base_dir)
+    elif storage_type == "rclone":
+        logger.debug("Creating RCloneStorage backend")
+        from pdr_run.storage.remote import RCloneStorage
+        if config and 'storage' in config:
+            rclone_config = {
+                'base_dir': config['storage'].get('base_dir', '/tmp'),
+                'rclone_remote': config['storage'].get('rclone_remote', 'default'),
+                'use_mount': config['storage'].get('use_mount', False)
+            }
+        else:
+            rclone_config = {
+                'base_dir': os.environ.get("PDR_STORAGE_DIR", "/tmp"),
+                'rclone_remote': os.environ.get("PDR_STORAGE_RCLONE_REMOTE", "default"),
+                'use_mount': os.environ.get("PDR_STORAGE_USE_MOUNT", "false").lower() == "true"
+            }
+        logger.debug(f"RClone config: {rclone_config}")
+        return RCloneStorage(rclone_config)
     elif storage_type == "remote":
         from pdr_run.storage.remote import RemoteStorage
         if config and 'storage' in config:

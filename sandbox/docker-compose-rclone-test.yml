@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  rclone-test-server:
+    image: atmoz/sftp:latest
+    ports:
+      - "2222:22"
+    command: testuser:testpass:1001:1001:/upload
+    volumes:
+      - rclone_test_data:/upload
+    environment:
+      - SFTP_USERS=testuser:testpass:1001:1001:/upload
+
+volumes:
+  rclone_test_data:

@@ -9,8 +9,15 @@ help:
 	@echo "start-services - Start all development services (Docker)"
 	@echo "stop-services  - Stop all development services"
 	@echo "test-all       - Run all tests"
+	@echo "test-unit      - Run unit tests only"
+	@echo "test-db        - Test database connections"
+	@echo "test-storage   - Test storage functionality"
+	@echo "test-integration - Run integration tests"
 	@echo "clean-sandbox  - Clean up sandbox data"
 	@echo "lint          - Run code quality checks"
+	@echo "logs          - Show Docker service logs"
+	@echo "restart       - Restart all services"
+	@echo "full-dev-setup - Complete development setup"
 
 install:
 	pip install .

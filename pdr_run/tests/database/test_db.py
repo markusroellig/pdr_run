@@ -40,18 +40,25 @@ def test_create_tables(temp_db_file):
     # Set environment for SQLite
     os.environ["PDR_DB_TYPE"] = "sqlite"
     os.environ["PDR_DB_FILE"] = temp_db_file
-    
+
     # Create connection and tables
     manager = get_db_manager()
     engine = manager.engine
     create_tables(engine)
-    
-    # Verify tables exist - using SQLAlchemy approach
+
+    # Verify tables exist - using database-agnostic approach
     with engine.connect() as conn:
-        # Check if a known table exists
-        result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='pdr_model_jobs'"))  # Changed from pdr_model_job to pdr_model_jobs
+        # FIX: Use database-agnostic table existence check
+        if engine.dialect.name == 'sqlite':
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='pdr_model_jobs'"))
+        elif engine.dialect.name == 'mysql':
+            result = conn.execute(text("SHOW TABLES LIKE 'pdr_model_jobs'"))
+        else:
+            # PostgreSQL and others
+            result = conn.execute(text("SELECT tablename FROM pg_tables WHERE tablename='pdr_model_jobs'"))
+            
         tables = result.fetchall()
-        assert len(tables) > 0
+        assert len(tables) > 0, "Expected table 'pdr_model_jobs' not found"
     
     # Clean up
     engine.dispose()
