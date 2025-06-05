@@ -31,6 +31,48 @@ pip install -e .
 
 This makes the `pdr_run` command available in your path while allowing you to modify the code.
 
+## Installation Validation
+
+After installation, verify everything is working:
+
+```bash
+# Check if pdr_run command is available
+which pdr_run
+
+# Test basic functionality
+pdr_run --help
+
+# Verify package installation
+python -c "import pdr_run; print(f'PDR Framework version: {pdr_run.__version__ if hasattr(pdr_run, \"__version__\") else \"installed\"}')"
+
+# Test imports
+python -c "
+from pdr_run.database.db_manager import get_db_manager
+from pdr_run.storage.base import get_storage_backend
+print('All core modules imported successfully')
+"
+```
+
+## Quick Start Verification
+
+Test the complete workflow:
+
+```bash
+# 1. Install and setup
+make dev-install
+make setup-sandbox
+make start-services
+
+# 2. Run tests
+make test-all
+
+# 3. Test a simple model (if PDR executables are available)
+pdr_run --model-name test_install --dry-run --single --dens 3.0 --chi 1.0
+
+# 4. Check logs
+ls -la logs/
+```
+
 ## Configuration
 
 The PDR framework supports multiple configuration methods with a clear precedence hierarchy. Configuration can be provided through environment variables, YAML configuration files, or a combination of both.
@@ -163,7 +205,7 @@ storage:
 2. **Start MySQL service** (using Docker for development):
    ```bash
    cd sandbox
-   docker-compose up -d mysql
+   docker compose up -d mysql
    ```
 
 ### Database Setup
@@ -198,7 +240,7 @@ storage:
 python pdr_run/tests/integration/run_mysql_tests.py
 
 # Or manually
-cd sandbox && docker-compose up -d mysql
+cd sandbox && docker compose up -d mysql
 python pdr_run/tests/integration/test_mysql_integration.py
 ```
 
@@ -240,8 +282,11 @@ python pdr_run/tests/integration/test_mysql_integration.py
 ### Testing SFTP Connection
 
 ```bash
-# Test storage functionality
+# Test storage functionality (if file exists)
 python sandbox/test_storage.py
+
+# Alternative: use integration tests
+python pdr_run/tests/integration/test_storage.py
 
 # Check configuration
 python -c "
@@ -463,7 +508,7 @@ make test-storage
    docker ps | grep mysql
    
    # Start MySQL service
-   cd sandbox && docker-compose up -d mysql
+   cd sandbox && docker compose up -d mysql
    
    # Test connection manually
    mysql -h localhost -u pdr_user -p pdr_test
@@ -542,14 +587,17 @@ make test-storage
 
 ### Checking Logs
 ```bash
-# View the last run log
-cat logs/pdr_run.log
+# View the last run log (if it exists)
+ls -la logs/ && cat logs/pdr_run.log 2>/dev/null || echo "No log file found yet"
 
-# View paramiko (SFTP) logs
-cat logs/paramiko.log
+# View paramiko (SFTP) logs (if SFTP is used)
+cat logs/paramiko.log 2>/dev/null || echo "No SFTP log file found"
 
 # Check Docker service logs
-cd sandbox && docker-compose logs mysql
+cd sandbox && docker compose logs mysql
+
+# List all available logs
+find . -name "*.log" -type f 2>/dev/null || echo "No log files found"
 ```
 
 ### Configuration Debugging
@@ -583,19 +631,23 @@ print(f'DB Name: {manager.config.get(\"database\", manager.config.get(\"path\", 
 
 ### Setting Up the Development Environment
 
-1. Clone the repository:
+1. Clone the repository and navigate to the PDR framework:
    ```bash
-   git clone <your-repo>
-   cd pdr_run
+   cd /home/roellig/pdr/pdr/pdr_run/
    ```
 
-2. Set up the sandbox environment:
+2. Install in development mode:
+   ```bash
+   make dev-install
+   ```
+
+3. Set up the sandbox environment:
    ```bash
    make setup-sandbox
    make start-services
    ```
 
-3. Run tests:
+4. Run tests:
    ```bash
    make test-all
    ```
@@ -611,9 +663,19 @@ make start-services
 # Reset and clean environment
 make clean-sandbox
 
-# Test services
+# Test services individually
 make test-db
 make test-storage
+make test-integration
+
+# View service logs
+make logs
+
+# Restart services
+make restart
+
+# Complete development setup
+make full-dev-setup
 ```
 
 See SANDBOX_README.md for detailed development instructions.
