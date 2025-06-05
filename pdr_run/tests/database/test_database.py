@@ -1,9 +1,12 @@
 import unittest
 import os
 import tempfile
+from unittest.mock import patch, MagicMock
 from pdr_run.database.connection import init_db
 from pdr_run.database.models import User, ModelNames
 from pdr_run.database.queries import get_or_create
+from pdr_run.database.db_manager import DatabaseManager
+
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):
@@ -14,11 +17,18 @@ class TestDatabase(unittest.TestCase):
             'location': 'local',
             'path': self.temp_db
         }
-        self.session, self.engine = init_db(self.db_config)
+        
+        # Mock the DatabaseManager to prevent environment variable interference
+        with patch.object(DatabaseManager, '_load_config') as mock_load_config:
+            # Force the exact config we want, ignoring environment
+            mock_load_config.return_value = self.db_config
+            self.session, self.engine = init_db(self.db_config)
     
     def tearDown(self):
         # Clean up
         self.session.close()
+        if hasattr(self.engine, 'dispose'):
+            self.engine.dispose()
         if os.path.exists(self.temp_db):
             os.unlink(self.temp_db)
     
@@ -55,6 +65,7 @@ class TestDatabase(unittest.TestCase):
         # Retrieve the same model
         models = self.session.query(ModelNames).filter_by(model_name="test_model").all()
         self.assertEqual(len(models), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
