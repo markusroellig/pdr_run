@@ -358,6 +358,9 @@ class RCloneStorage(Storage):
         self.mount_point = config.get('mount_point', os.path.join(self.base_dir, 'mnt'))
         self.use_mount = config.get('use_mount', False)
         
+        # Add logger for consistency with SFTPStorage
+        self.logger = logging.getLogger("dev")
+        
         # Verify rclone is installed
         try:
             subprocess.run(['rclone', 'version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -519,4 +522,33 @@ class RCloneStorage(Storage):
             return True
         except Exception as e:
             logger.error(f"Failed to sync directory: {str(e)}", exc_info=True)
+            return False
+    
+    def file_exists(self, remote_path):
+        """Check if a file exists on the remote server using rclone.
+        
+        Args:
+            remote_path (str): Path to check on the remote server
+            
+        Returns:
+            bool: True if file exists, False otherwise
+        """
+        try:
+            # Use rclone lsf to check if the specific file exists
+            cmd = [
+                'rclone', 'lsf', 
+                f"{self.remote}:{remote_path}"
+            ]
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True)
+            
+            # If lsf returns output, the file exists
+            return bool(result.stdout.strip())
+            
+        except subprocess.SubprocessError as e:
+            # If the command fails, likely the file doesn't exist
+            self.logger.debug(f"Error checking file existence with rclone: {e}")
+            return False
+        except Exception as e:
+            self.logger.debug(f"Error checking file existence: {e}")
             return False
