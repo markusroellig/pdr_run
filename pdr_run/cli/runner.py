@@ -64,6 +64,7 @@ import logging
 import logging.config  # Add this import
 import argparse
 import yaml
+import traceback  # Add this import
 from datetime import datetime
 
 from pdr_run.core.engine import run_model, run_parameter_grid
@@ -415,59 +416,43 @@ def main():
     
     # Execute models
     try:
-        execution_start = datetime.now()
-        logger.info(f"Starting model execution at {execution_start.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Run model
         if args.single:
-            logger.info(f"Executing single model: {args.model_name}")
+            logger.info(f"Executing single model: {model_name}")
             logger.debug(f"Model parameters: {params}")
-            if args.force_onion:
-                logger.info("Force onion mode enabled")
+            
+            # Build configuration if none provided
+            if config is None or 'pdr' not in config:
+                from pdr_run.core.engine import _build_default_config
+                config = _build_default_config(params)
+                logger.info("Built default configuration with environment overrides")
+            
             job_id = run_model(
-                params=params, 
-                model_name=args.model_name, 
+                params=params,
+                model_name=model_name,
                 config=config,
                 force_onion=args.force_onion,
                 json_template=args.json_template
             )
-            logger.info(f"Completed job {job_id}")
+            logger.info(f"Single model execution completed. Job ID: {job_id}")
         else:
-            # Calculate number of parameter combinations
-            param_counts = {}
-            #for param in ['metal', 'dens', 'mass', 'chi', 'col']:
-            for param in ['metal', 'dens', 'mass', 'chi']:
-                if param in params and isinstance(params[param], list):
-                    param_counts[param] = len(params[param])
-            
-            if param_counts:
-                total_combinations = 1
-                for count in param_counts.values():
-                    total_combinations *= count
-                logger.info(f"Parameter grid will generate {total_combinations} combinations")
-                logger.debug(f"Parameter grid dimensions: {param_counts}")
-            
-            logger.info(f"Executing parameter grid for model: {args.model_name}")
-            logger.info(f"Parallel execution: {'enabled' if args.parallel else 'disabled'}")
-            if args.force_onion:
-                logger.info("Force onion mode enabled")
-            
+            # Grid execution
+            if config is None or 'pdr' not in config:
+                from pdr_run.core.engine import _build_default_config
+                config = _build_default_config(params)
+                logger.info("Built default configuration with environment overrides")
+                
             job_ids = run_parameter_grid(
                 params=params,
-                model_name=args.model_name,
+                model_name=model_name,
                 config=config,
                 parallel=args.parallel,
-                n_workers=args.workers,
+                n_workers=n_workers,
                 force_onion=args.force_onion,
                 json_template=args.json_template
             )
-            
-            execution_time = datetime.now() - execution_start
-            logger.info(f"Grid execution completed: {len(job_ids)} jobs in {execution_time.total_seconds():.1f} seconds")
-            logger.info(f"Average time per job: {execution_time.total_seconds() / max(len(job_ids), 1):.3f} seconds")
+            logger.info(f"Parameter grid execution completed. Job IDs: {job_ids}")
             
     except Exception as e:
-        import traceback
         logger.error(f"Error running model: {e}")
         logger.error(f"Error details: {type(e).__name__}")
         logger.error(f"Traceback: {traceback.format_exc()}")

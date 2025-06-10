@@ -554,6 +554,58 @@ def _calculate_cpu_count(requested_cpus=0, reserved_cpus=2):
     else:
         return max(1, available_cpus - reserved_cpus)
 
+def _build_default_config(params=None):
+    """Build default configuration from default_config.py with environment variable overrides."""
+    from pdr_run.config.default_config import (
+        DATABASE_CONFIG, STORAGE_CONFIG, USER_CONFIG, PDR_CONFIG, DEFAULT_PARAMETERS
+    )
+    
+    # Start with default configurations
+    config = {
+        'database': DATABASE_CONFIG.copy(),
+        'storage': STORAGE_CONFIG.copy(),
+        'user': USER_CONFIG.copy(),
+        'pdr': PDR_CONFIG.copy(),
+        'parameters': params or DEFAULT_PARAMETERS.copy()
+    }
+    
+    # Override with environment variables
+    # Database overrides
+    if os.environ.get('PDR_DB_TYPE'):
+        config['database']['type'] = os.environ['PDR_DB_TYPE']
+    if os.environ.get('PDR_DB_HOST'):
+        config['database']['host'] = os.environ['PDR_DB_HOST']
+    if os.environ.get('PDR_DB_PORT'):
+        config['database']['port'] = int(os.environ['PDR_DB_PORT'])
+    if os.environ.get('PDR_DB_DATABASE'):
+        config['database']['database'] = os.environ['PDR_DB_DATABASE']
+    if os.environ.get('PDR_DB_USERNAME'):
+        config['database']['username'] = os.environ['PDR_DB_USERNAME']
+    if os.environ.get('PDR_DB_PASSWORD'):
+        config['database']['password'] = os.environ['PDR_DB_PASSWORD']
+    if os.environ.get('PDR_DB_FILE'):
+        config['database']['path'] = os.environ['PDR_DB_FILE']
+    
+    # Storage overrides
+    if os.environ.get('PDR_STORAGE_TYPE'):
+        config['storage']['type'] = os.environ['PDR_STORAGE_TYPE']
+    if os.environ.get('PDR_STORAGE_DIR'):
+        config['storage']['base_dir'] = os.environ['PDR_STORAGE_DIR']
+    if os.environ.get('PDR_STORAGE_HOST'):
+        config['storage']['host'] = os.environ['PDR_STORAGE_HOST']
+    if os.environ.get('PDR_STORAGE_USER'):
+        config['storage']['username'] = os.environ['PDR_STORAGE_USER']
+    if os.environ.get('PDR_STORAGE_PASSWORD'):
+        config['storage']['password'] = os.environ['PDR_STORAGE_PASSWORD']
+    
+    # PDR overrides
+    if os.environ.get('PDR_BASE_DIR'):
+        config['pdr']['base_dir'] = os.environ['PDR_BASE_DIR']
+    if os.environ.get('PDR_EXEC_PATH'):
+        config['pdr']['base_dir'] = os.environ['PDR_EXEC_PATH']
+    
+    return config
+
 def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None):
     """Run a grid of PDR models with different parameters."""
     start_time = time.time()
@@ -578,13 +630,15 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
         logger.info(f"No model name provided, using default: {model_name}")
     
     if config is None:
-        config = {
-            'pdr': PDR_CONFIG,
-            'parameters': params
-        }
-        logger.info("No configuration provided, using default configuration")
+        config = _build_default_config(params)
+        logger.info("No configuration provided, using default configuration with environment overrides")
     
-     # Get storage base directory and PDR execution directory
+    # Ensure config has required sections
+    if 'pdr' not in config:
+        logger.error("Configuration missing 'pdr' section")
+        config['pdr'] = PDR_CONFIG.copy()
+    
+    # Get storage base directory and PDR execution directory
     pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
     
     # Check if we have a separate storage directory configured
