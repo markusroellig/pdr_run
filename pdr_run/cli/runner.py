@@ -172,6 +172,7 @@ def load_config(config_file):
         logger.warning(f"Config file not found: {config_file}")
         return None
     
+    config_content = None  # Initialize to avoid unbound variable
     try:
         with open(config_file, 'r') as f:
             config_content = f.read()
@@ -184,21 +185,24 @@ def load_config(config_file):
     except yaml.YAMLError as e:
         # Enhanced YAML error reporting
         logger.error(f"YAML parsing error in {config_file}: {e}")
-        if hasattr(e, 'problem_mark'):
+        if hasattr(e, 'problem_mark') and e.problem_mark is not None and config_content is not None:
             mark = e.problem_mark
-            # Print detailed position information
-            logger.error(f"Error position: line {mark.line + 1}, column {mark.column + 1}")
-            # Show the problematic line with a marker
-            if mark.line < len(config_content.splitlines()):
-                problem_line = config_content.splitlines()[mark.line]
-                logger.error(f"Problem line: {problem_line}")
-                logger.error(f"              {' ' * mark.column}^")
+            # Ensure mark has the required attributes
+            if hasattr(mark, 'line') and hasattr(mark, 'column'):
+                # Print detailed position information
+                logger.error(f"Error position: line {mark.line + 1}, column {mark.column + 1}")
+                # Show the problematic line with a marker
+                config_lines = config_content.splitlines()
+                if 0 <= mark.line < len(config_lines):
+                    problem_line = config_lines[mark.line]
+                    logger.error(f"Problem line: {problem_line}")
+                    logger.error(f"              {' ' * mark.column}^")
         return None
     except Exception as e:
         logger.error(f"Error loading config file: {e}", exc_info=True)
         return None
 
-def configure_from_args(args):
+def configure_from_args(args, config=None):
     """Configure environment from command-line arguments."""
     # Set environment variables based on args
     if hasattr(args, 'storage_type') and args.storage_type:
@@ -212,10 +216,10 @@ def configure_from_args(args):
     if hasattr(args, 'db_password') and args.db_password:
         os.environ['PDR_DB_PASSWORD'] = args.db_password
     
-    # Update config from environment variables
-    db_password_env = os.environ.get('PDR_DB_PASSWORD')
-    if db_password_env:
-        config['database']['password'] = db_password_env
+    # # Update config from environment variables
+    # db_password_env = os.environ.get('PDR_DB_PASSWORD')
+    # if db_password_env:
+    #     config['database']['password'] = db_password_env
     
     # Return config dict for compatibility
     return {}

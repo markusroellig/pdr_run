@@ -69,6 +69,7 @@ Dependencies:
 import os
 import logging
 import tempfile
+import shutil
 import multiprocessing
 import time
 from datetime import datetime
@@ -710,8 +711,8 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
     
     return job_ids
 
-# Also make this accessible from run_parameter_grid
-run_parameter_grid._calculate_cpu_count = _calculate_cpu_count
+# Remove this problematic line that tries to attach the function as an attribute
+# run_parameter_grid._calculate_cpu_count = _calculate_cpu_count
 
 def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None):
     """Run a single PDR model.

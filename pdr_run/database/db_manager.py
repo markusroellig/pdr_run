@@ -10,6 +10,7 @@ import logging
 from typing import Optional, Dict, Any, Union
 from contextlib import contextmanager
 from urllib.parse import quote_plus
+import importlib.util
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -134,9 +135,8 @@ class DatabaseManager:
         
             if missing_fields:
                 # Check if MySQL driver is available
-                try:
-                    import mysql.connector
-                except ImportError:
+                mysql_spec = importlib.util.find_spec("mysql.connector")
+                if mysql_spec is None:
                     driver_msg = "\nAdditionally, MySQL driver is not installed:\n  pip install mysql-connector-python\n"
                 else:
                     driver_msg = ""
