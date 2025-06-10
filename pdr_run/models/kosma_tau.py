@@ -81,7 +81,7 @@ pdrnew_variable_names=[
     'ifcrdes'  ,#
     'ifphdes' , #
     'ifthdes' , #
-    'bindsites',  #
+    'bindsites' , #
     'ifchemheat' , #
     'ifheat_alfven' ,#
     'alfven_velocity',  #
@@ -89,10 +89,10 @@ pdrnew_variable_names=[
     'temp_start' , #
     'itmeth' , #
     'ichemeth' ,#
-    'inewtonstep', #
-    'omega_neg', #
-    'omega_pos', #
-    'lambda', #
+    'inewtonstep' , #
+    'omega_neg' , #
+    'omega_pos' , #
+    'lambda' , #
     'use_conservation' , #
     'rescaleQF' , #
     'precondLR' , #
@@ -916,13 +916,36 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
         
         # Download CTRL_IND file for onion processing if it exists
         ctrl_ind_remote_path = os.path.join(job.model_name.model_path, 'pdrgrid', f'CTRL_IND{model}')
+        ctrl_ind_downloaded = False
         try:
             logger.info(f"Attempting to download CTRL_IND file from remote storage at: {ctrl_ind_remote_path}")
-            storage.retrieve_file(ctrl_ind_remote_path, 'CTRL_IND')
-            logger.info(f"Downloaded CTRL_IND file from remote storage")
+            
+            # Check if the source file exists before attempting to retrieve
+            if os.path.exists(ctrl_ind_remote_path):
+                # Create absolute path for destination to avoid path resolution issues
+                ctrl_ind_dest = os.path.abspath('CTRL_IND')
+                logger.info(f"Source file exists, downloading to: {ctrl_ind_dest}")
+                
+                storage.retrieve_file(ctrl_ind_remote_path, ctrl_ind_dest)
+                logger.info(f"Downloaded CTRL_IND file from remote storage")
+                ctrl_ind_downloaded = True
+            else:
+                logger.warning(f"CTRL_IND file does not exist at: {ctrl_ind_remote_path}")
+                
         except Exception as e:
             logger.warning(f"Could not download CTRL_IND file: {e}")
+            logger.debug(f"Error details: {type(e).__name__}: {str(e)}")
             
+        # If download failed, check if we have it in pdroutput directory (fallback)
+        if not ctrl_ind_downloaded and os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
+            try:
+                import shutil
+                shutil.copy2(os.path.join('pdroutput', 'CTRL_IND'), 'CTRL_IND')
+                logger.info(f"Copied CTRL_IND from pdroutput directory as fallback")
+                ctrl_ind_downloaded = True
+            except Exception as e:
+                logger.warning(f"Could not copy CTRL_IND from pdroutput: {e}")
+    
         update_job_status(job_id, 'skipped', session)
         pdr_skipped = True
     else:

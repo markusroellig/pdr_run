@@ -85,6 +85,7 @@ def parse_arguments():
     # Add dry-run option
     parser.add_argument('--dry-run', action='store_true', 
                         help='Display configuration and exit without running models')
+    
                             
     # Model name
     parser.add_argument(
@@ -446,7 +447,7 @@ def main():
                 model_name=model_name,
                 config=config,
                 parallel=args.parallel,
-                n_workers=n_workers,
+                n_workers=args.workers,
                 force_onion=args.force_onion,
                 json_template=args.json_template
             )
