@@ -72,6 +72,7 @@ import tempfile
 import shutil
 import multiprocessing
 import time
+import traceback
 from datetime import datetime
 from joblib import Parallel, delayed
 
@@ -336,14 +337,25 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     return parameter_ids, job_ids
 
 
-def run_instance(job_id, config=None, force_onion=False, json_template=None):
+def run_instance(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False):
     """Run a single PDR model instance.
     
     This function handles the infrastructure setup (directories, executables, templates)
     and delegates the actual model execution to the model-specific implementation.
+        Args:
+        job_id (int): Job ID
+        config (dict, optional): Configuration. Defaults to None.
+        force_onion (bool): If True, run onion even if PDR model was skipped.
+        json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
+        keep_tmp (bool): If True, do not delete temporary directory after run.
+    Returns:
+        list: Log lines or error messages.
     """
-    start_time = time.time()
+    #start_time = time.time()
+    start_time_instance = time.time()
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"keep_tmp flag for job {job_id}: {keep_tmp}")
+
     
     db_manager = get_db_manager()
     session = db_manager.get_session()
@@ -368,42 +380,65 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None):
     current_dir = os.getcwd()
     logger.debug(f"Current working directory: {current_dir}")
     
-    try:
-        # Change to PDR directory
-        os.chdir(pdr_dir)
-        logger.debug(f"Changed working directory to: {pdr_dir}")
-        
-        # Create temporary directory
-        with tempfile.TemporaryDirectory(prefix='pdr-') as tmp_dir:
-            logger.info(f"Created temporary directory: {tmp_dir}")
-            
-            # Set up execution environment
-            _setup_execution_environment(tmp_dir, pdr_dir, config, json_template)
-            
-            # Change to temporary directory
-            os.chdir(tmp_dir)
-            
-            # Create log file
-            with open("out.log", "w") as log_file:
-                log_file.write(f"Running instance for job ID: {job_id}\n")
-            
-            # Run the model (delegate to model-specific implementation)
-            run_kosma_tau(job_id, tmp_dir, force_onion=force_onion, config=config)
-
-            # Read log file
-            with open("out.log", "r") as log_file:
-                output_lines = log_file.read().splitlines()
-            
-            # Return to original directory
-            os.chdir(current_dir)
-            
-            return output_lines
     
-    except Exception as e:
-        logger.error(f"Error running job {job_id}: {str(e)}", exc_info=True)
-        update_job_status(job_id, "exception")
+    def _execute_in_tmp_dir(tmp_dir_path_local):
+        original_cwd_for_execute = os.getcwd() 
+        try:
+            _setup_execution_environment(tmp_dir_path_local, pdr_dir, config, json_template)
+            os.chdir(tmp_dir_path_local)
+            logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
+            
+            run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config)
+            
+            return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
+        except Exception as exec_err:
+            logger.error(f"Job {job_id}: Error during execution in {tmp_dir_path_local}: {exec_err}", exc_info=True)
+            err_session_exec = get_db_manager().get_session()
+            try:
+                update_job_status(job_id, "exception_runtime", err_session_exec) 
+            finally:
+                err_session_exec.close()
+            raise 
+        finally:
+            os.chdir(original_cwd_for_execute)
+            logger.info(f"Job {job_id}: Restored working directory from temp to: {original_cwd_for_execute}")
+
+    output_lines_result = []
+    try:
+        os.chdir(pdr_dir)
+        logger.debug(f"Job {job_id}: Changed working directory to PDR base: {pdr_dir}")
+
+        if keep_tmp:
+            persistent_tmp_dir = tempfile.mkdtemp(prefix=f'pdr-job{job_id}-')
+            logger.warning(f"Job {job_id}: Temporary directory {persistent_tmp_dir} will be kept due to --keep-tmp flag.")
+            logger.warning(f"Job {job_id}: Please ensure you manually clean up this directory after debugging: {persistent_tmp_dir}")
+            try:
+                output_lines_result = _execute_in_tmp_dir(persistent_tmp_dir)
+            except Exception as e_persistent:
+                output_lines_result.extend([f"Error in persistent temp dir: {str(e_persistent)}", traceback.format_exc()])
+        else:
+            with tempfile.TemporaryDirectory(prefix=f'pdr-job{job_id}-') as tmp_dir_context:
+                logger.info(f"Job {job_id}: Created temporary directory: {tmp_dir_context}")
+                try:
+                    output_lines_result = _execute_in_tmp_dir(tmp_dir_context)
+                except Exception as e_context:
+                    output_lines_result.extend([f"Error in temp dir: {str(e_context)}", traceback.format_exc()])
+        
+    except Exception as e_outer:
+        logger.error(f"Job {job_id}: Outer error during setup or execution: {str(e_outer)}", exc_info=True)
+        err_session_outer = get_db_manager().get_session()
+        try:
+            update_job_status(job_id, "exception_setup_outer", err_session_outer)
+        finally:
+            err_session_outer.close()
+        output_lines_result.extend([f"Outer Error: {str(e_outer)}", traceback.format_exc()])
+    finally:
         os.chdir(current_dir)
-        return [f"Error: {str(e)}"]
+        logger.debug(f"Job {job_id}: Restored original working directory: {current_dir}")
+
+    end_time_instance = time.time()
+    logger.info(f"Job {job_id} finished processing in {end_time_instance - start_time_instance:.2f} seconds.")
+    return output_lines_result
 
 def _setup_execution_environment(tmp_dir, pdr_dir, config, json_template=None):
     """Set up the execution environment for PDR model runs.
@@ -510,7 +545,7 @@ def _setup_template_files(tmp_dir, pdr_dir, config, json_template=None):
         logger.warning(f"JSON template file {json_template_file} not found in standard locations")
 
 
-def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None):
+def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False):
     """Wrapper function for run_instance to handle exceptions.
     
     Args:
@@ -518,13 +553,14 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
         config (dict, optional): Configuration. Defaults to None.
         force_onion (bool): If True, run onion even if PDR model was skipped
         json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
+        keep_tmp (bool): If True, do not delete temporary directory after run.
     """
     try:
-        output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template)
+        output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
         for line in output:
             logger.info(f"[Job {job_id}]: {line}")
-    except Exception as e:
-        logger.error(f"Error in job {job_id}: {str(e)}", exc_info=True)
+    except Exception as e: # This catches errors re-raised from run_instance or new ones here
+        logger.error(f"Critical error in run_instance_wrapper for job {job_id}: {str(e)}", exc_info=True)
         
         # Update job status
         db_manager = get_db_manager()
@@ -607,11 +643,12 @@ def _build_default_config(params=None):
     
     return config
 
-def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None):
+def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None, keep_tmp=False):
     """Run a grid of PDR models with different parameters."""
     start_time = time.time()
     logger.info(f"Starting parameter grid execution for model '{model_name}'")
     logger.info(f"Parallel execution: {'enabled' if parallel else 'disabled'}")
+    logger.info(f"keep_tmp flag for grid run '{model_name}': {keep_tmp}")
     
     if params is None:
         params = DEFAULT_PARAMETERS
@@ -702,29 +739,32 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
     # Run jobs
     if parallel:
         Parallel(n_jobs=n_workers)(
-            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion, json_template=json_template)
+            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
             for job_id in job_ids
         )
     else:
         for job_id in job_ids:
-            run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template)
-    
+            run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
+    end_time = time.time()
+    logger.info(f"Parameter grid execution for model '{model_name}' completed in {end_time - start_time:.2f} seconds.")
     return job_ids
 
 # Remove this problematic line that tries to attach the function as an attribute
 # run_parameter_grid._calculate_cpu_count = _calculate_cpu_count
 
-def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None):
+def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None, keep_tmp=False):
     """Run a single PDR model.
     
     Args:
         params (dict, optional): Parameter configuration. Defaults to None.
         model_name (str, optional): Model name. Defaults to None.
         config (dict, optional): Framework configuration. Defaults to None.
+        force_onion (bool): If True, run onion even if PDR model was skipped.
         json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
+        keep_tmp (bool): If True, do not delete temporary directory after run.
         
     Returns:
-        int: Job ID
+        int: Job ID or None if no jobs were created/run.
     """
     if params is None:
         params = DEFAULT_PARAMETERS
@@ -739,7 +779,8 @@ def run_model(params=None, model_name=None, config=None, force_onion=False, json
         model_name=model_name,
         config=config,
         parallel=False,
-        json_template=json_template
+        json_template=json_template,
+        keep_tmp=keep_tmp # Pass keep_tmp
     )
     
     if job_ids:

@@ -109,6 +109,11 @@ def parse_arguments():
     parser.add_argument('--force-onion', action='store_true', 
                        help='Force running onion even if PDR model was skipped')
     
+    # Add keep-tmp option
+    parser.add_argument('--keep-tmp', action='store_true',
+                        help='Do not delete temporary directories after run (for debugging)')
+    
+    
     # Add other parameters
     parser.add_argument(
         '--metal',
@@ -436,7 +441,8 @@ def main():
                 model_name=model_name,
                 config=config,
                 force_onion=args.force_onion,
-                json_template=args.json_template
+                json_template=args.json_template,
+                keep_tmp=args.keep_tmp
             )
             logger.info(f"Single model execution completed. Job ID: {job_id}")
         else:
@@ -453,7 +459,8 @@ def main():
                 parallel=args.parallel,
                 n_workers=args.workers,
                 force_onion=args.force_onion,
-                json_template=args.json_template
+                json_template=args.json_template,
+                keep_tmp=args.keep_tmp
             )
             logger.info(f"Parameter grid execution completed. Job IDs: {job_ids}")
             
