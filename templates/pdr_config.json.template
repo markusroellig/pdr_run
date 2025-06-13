@@ -3,158 +3,158 @@
 
   "physical_params": {
     // Physical parameters of the PDR
-    "surface_density": KT_VARxnsur_,           ! Total H particle density at cloud surface (in cm^-3): XNSUR
-    "density_law_exponent": KT_VARalpha_,        ! Exponent of density-law: ALPHA. Density increases as r^(-ALPHA)
-    "core_radius": KT_VARrcore_,                 ! Core radius (in units of cloud radius): RCORE. Density is constant for r < RCORE
-    "dust_cross_section": KT_VARsigd_,      ! Dust cross section per H nucleus (in cm^2): SIGD
-    "cloud_radius": KT_VARrtot_,         ! Total cloud radius (in cm): RTOT
-    "radiation_field_strength": KT_VARsint_,   ! Strength of incident UV radiation field in Draine units: SINT
-    "cosmic_ray_rate": KT_VARcosray_,         ! Primary cosmic ray ionization rate (in s^-1): COSRAY
-    "line_width": KT_VARbeta_,                ! Doppler line width (in cm/s): BETA. Negative value uses Larson's law
-    "metallicity": KT_VARzmetal_                  ! Metallicity scaling factor: ZMETAL. 1.0 is solar metallicity
+    "surface_density": KT_VARxnsur_,           // Total H particle density at cloud surface (in cm^-3): XNSUR
+    "density_law_exponent": KT_VARalpha_,        // Exponent of density-law: ALPHA. Density increases as r^(-ALPHA)
+    "core_radius": KT_VARrcore_,                 // Core radius (in units of cloud radius): RCORE. Density is constant for r < RCORE
+    "dust_cross_section": KT_VARsigd_,      // Dust cross section per H nucleus (in cm^2): SIGD
+    "cloud_radius": KT_VARrtot_,         // Total cloud radius (in cm) (1.02d17=0.032 pc, Av=10, r=9.684d16): RTOT
+    "radiation_field_strength": KT_VARsint_,   // Strength of incident UV radiation field in Draine units: SINT
+    "cosmic_ray_rate": KT_VARcosray_,         // Primary cosmic ray ionization rate (in s^-1): COSRAY
+    "line_width": KT_VARbeta_,                // Line (Doppler) width (in cm/sec) (old 0.7213d5):   BETA   (neg value enforces Larson 1981)
+    "metallicity": KT_VARzmetal_                  // Metallicity scaling factor: ZMETAL. 1.0 is solar metallicity
   },
 
   "preshielding": {
     // Pre-shielding factors for H2 and CO
-    "h2": KT_VARpreshh2_,                          ! H2 pre-shielding factor: TAU0H2
-    "co": KT_VARpreshco_,                           ! CO pre-shielding factor: TAU0CO
+    "h2": KT_VARpreshh2_,                          // Preshielding factors for H2 log10(N_pre(H2)):   PRESHH2
+    "co": KT_VARpreshco_,                           // Preshielding factors for CO log10(N_pre(CO)):   PRESHCO
   },
 
   "radiative_transfer": {
     // Methods for radiative transfer calculations
-    "fuv_method": KT_VARifuvmeth_,                    ! FUV radiative transfer method: MEFUV. 0=exp, 1=eff, 2=full
-    "dust_method": KT_VARidustmet_                    ! Dust radiative transfer method: MEDUST. 0=exp, 1=eff
+    "fuv_method": KT_VARifuvmeth_,                    // Choose method of FUV radiative transfer [0=old, 1=mrt.exe output] IFUVMETH
+    "dust_method": KT_VARidustmet_                    // Choose method of dust temperature calculations [0=old, 1=mrt.exe output] IDUSTMET
   },
 
   "fuv_field": {
     // Properties of the FUV radiation field
-    "type": KT_VARifuvtype_,                          ! FUV field type: IFUV. 1=Draine, 2=Habing, 3=Star(T), 4=Power law, 5=File
-    "temperature": KT_VARfuvtemp_,               ! Effective temperature of illuminating star (if IFUV=3): TFUV
-    "file": "KT_VARfuvstring_"               ! Name of file containing FUV field data (if IFUV=5)
+    "type": KT_VARifuvtype_,                          // Specify type of FUV field IFUVTYPE (0=none, 1= CMB, 2=Draine(default), 4=black-body (temp in FUVTEMP), 5=read from file, 6= Meudon
+    "temperature": KT_VARfuvtemp_,              // Effective temperature of illuminating star (if IFUVTYPE=3): FUVTEMP
+    "file": "KT_VARfuvstring_"               // Name of file containing FUV field data (if IFUVTYPE=5), FUVSTRING
   },
 
-  "rescale_umist_rates": KT_VARinewgam_,             ! Rescale UMIST photorates (Eq. 16 in Röllig et al. 2012): INEWGAM. 0=off, 1=on
+  "rescale_umist_rates": KT_VARinewgam_,             // Rescale UMIST photorates (Eq. 16 in Röllig et al. 2012): INEWGAM. 0=off, 1=on
 
-  "scattering_method": KT_VARiscatter_,              ! Scattering treatment method: ISCATTER. 1=albedo=0, -1=compute k_scat
+  "scattering_method": KT_VARiscatter_,              // Choose method of scattering treatment xkscat(:=1=>albedo=0; :=-1=>kscat computed) ISCATTER
 
-  "output_file": "output.dat",          ! Name of the output file
+  "output_file": "output.dat",          // Name of the output file
 
   "temperature": {
     // Temperature calculation settings
-    "calculate_gas": KT_VARihtclgas_,                 ! Calculate gas temperature: ITEMP. 1=calculate, 0=use fixed value
-    "fixed_gas_value": KT_VARtgasc_,            ! Fixed gas temperature if not calculated (in K): TGASC
-    "calculate_dust": KT_VARihtcldust_,                ! Calculate dust temperature: ITDUST. 1=calculate, 0=use fixed value
-    "fixed_dust_value": KT_VARtdustc_            ! Fixed dust temperature if not calculated (in K): TDUSTC
+    "calculate_gas": KT_VARihtclgas_,                 // Calculate gas temperature [1=on, 0=off], if not, give Tgas     IHTCLGAS
+    "fixed_gas_value": KT_VARtgasc_,            // Fixed gas temperature if not calculated (in K): TGAS
+    "calculate_dust": KT_VARihtcldust_,                // Calculate dust temperature [1=on, 0=off], if not, give Tdust   IHTCLDUST
+    "fixed_dust_value": KT_VARtdustc_            // Fixed dust temperature if not calculated (in K): TDUST
   },
 
   "heating": {
     // Heating process settings
-    "pe_method": KT_VARipehmeth_,                     ! Photoelectric heating method: IPEHMETH. 0=WD, 1=BT94, 2=WD+BT
-    "pe_dust_index": KT_VARindxpeh_,                 ! Photoelectric heating dust size distribution index: indxpeh
-    "include_pah": KT_VARihtclpah_                    ! Include PAH in photoelectric heating: IHTCLPAH. 1=yes, 0=no
+    "pe_method": KT_VARipehmeth_,                     // Choose PE heating [0=BT94, 1=WD01] IPEHMETH,  (INDS7 -> 4) 
+    "pe_dust_index": KT_VARindxpeh_,                 // Photoelectric heating dust size distribution index: indxpeh (if IPEHMETH=1)
+    "include_pah": KT_VARihtclpah_                    // Include PAH's in PE heating [1=yes, 0=no], (eq. 43 in Bakes&Tielens, 94, or W&D2001)  IHTCLPAH
   },
 
   "dust": {
     // Dust properties
-    "composition": KT_VARindstr_,                   ! Dust composition: INDSTR. 0=graphite, 1=silicate, 2=PAH
-    "components": KT_VARinds_,                    ! Number of dust components: INDS
-    "index": KT_VARindx_,                         ! Dust size distribution index: INDX
-    "dust_to_gas_ratio": [KT_VARd2gratio1_,KT_VARd2gratio2_, KT_VARd2gratio3_, KT_VARd2gratio4_, KT_VARd2gratio5_, KT_VARd2gratio6_, KT_VARd2gratio7_, KT_VARd2gratio8_, KT_VARd2gratio9_, KT_VARd2gratio10_]  ! d2gratio Dust-to-gas mass ratios for each component
+    "composition": KT_VARindstr_,                   // Specify Dust Composition: (0=MRN,1=WD01,2=MRNlike)
+    "components": KT_VARinds_,                    // Number  of components (MRN=2,WD01=4,MRNlike=4) INDSTR
+    "index": KT_VARindx_,                         // Dust size distribution index: INDS
+    "dust_to_gas_ratio": [KT_VARd2gratio1_,KT_VARd2gratio2_, KT_VARd2gratio3_, KT_VARd2gratio4_, KT_VARd2gratio5_, KT_VARd2gratio6_, KT_VARd2gratio7_, KT_VARd2gratio8_, KT_VARd2gratio9_, KT_VARd2gratio10_]  // d2gratio Dust-to-gas mass ratios for each component
   },
 
   "h2_formation": {
     // H2 formation settings
-    "method": KT_VARih2meth_,                        ! H2 formation method: IH2METH. 0=CT, 1=SD
-    "on_pah": KT_VARih2onpah_,                        ! Allow H2 formation on PAHs: IH2ONPAH. 1=yes, 0=no
-    "fixed_rate": KT_VARh2formc_             ! Fixed H2 formation rate if method=0 (in cm^3/s): H2FORMC
+    "method": KT_VARih2meth_,                        // Specify H2 formation (0=SD89, 1=C&T2002, 2=fixed 3=Benchmark) IH2METH
+    "on_pah": KT_VARih2onpah_,                        / Allow H2 formation on PAHs: IH2ONPAH. 1=yes, 0=no
+    "fixed_rate": KT_VARh2formc_             // Fixed H2 formation rate if method=0 (in cm^3/s): H2FORMC
   },
 
   "h2": {
     // H2 treatment settings
-    "shielding_method": KT_VARih2shld_,              ! H2 self-shielding method: IH2SHIELD. (0=FGK, 1=DB96)
-    "level_treatment": KT_VARh2_structure_,               ! H2 level population treatment: h2_structure. (0=only vib levels, 1=ro-vib structure, 2=ro-vib structure post-process)
-    "h_collision_rates": KT_VARh2_h_coll_rates_,             ! H-H2 collision rates: h2_h_coll_rates. (0:S&D89, 1: Lepp et al., 2: M&M1995, 3: Flower et al. 1998, 4: Lique 2015)
-    "use_reactive_collisions": KT_VARh2_h_reactive_colls_,       ! Use reactive collision rates: h2_h_reactive_colls. 0=no, 1=yes
-    "use_gbar_approximation": KT_VARh2_use_gbar_,        ! Use g-bar approximation for H2: h2_use_gbar. 1=yes, 0=no
-    "quadrupole_transition_method": KT_VARh2_quad_a_   ! H2 quadrupole transition probability method: h2_quad_a. 0=TH85, 1=WOL98
+    "shielding_method": KT_VARih2shld_,              // Specify H2 shielding treatment for chemistry (0=FGK, 1=DB96)
+    "level_treatment": KT_VARh2_structure_,               // Specify H2 level treatment (0=only vib levels, 1=ro-vib structure, 2=ro-vib structure post-process) h2_structure
+    "h_collision_rates": KT_VARh2_h_coll_rates_,             // H2 ro vib excitation:  H - H2 collision rates (0:S&D89, 1: Lepp et al., 2: M&M1995, 3: Flower et al. 1998, 4: Lique 2015)
+    "use_reactive_collisions": KT_VARh2_h_reactive_colls_,       // H2 ro vib excitation:  H - H2 use reactive collisions [0=no, 1=yes, 2=yes extended (same as ichh2 = 3)]  h2_h_coll_rates
+    "use_gbar_approximation": KT_VARh2_use_gbar_,        // H2 ro vib collisions: use g-bar approximation by Shaw et al 2005 [0=no, 1=yes] h2_use_gbar
+    "quadrupole_transition_method": KT_VARh2_quad_a_   // H2 ro vib excitation:  H2 quadrupole transition A values (0: Turner, J. et al. 1977, 1: Wolniewicz, L. et al.  1998, 2: Roueff et al. 2019)
   },
 
   "surface_chemistry": {
     // Surface chemistry settings
-    "h2_formation_desorption": KT_VARifh2des_,       ! H2 formation desorption: IFH2DES. 1=yes, 0=no
-    "cr_desorption": KT_VARifcrdes_,                 ! Cosmic ray desorption: IFCRDES. 1=yes, 0=no
-    "photo_desorption": KT_VARifphdes_,              ! Photodesorption: IFPHDES. 1=yes, 0=no
-    "thermal_desorption": KT_VARifthdes_,            ! Thermal desorption: IFTHDES. 1=yes, 0=no
-    "binding_sites": KT_VARbindsites_             ! Number of surface binding sites per cm^2: BINDSITES
+    "h2_formation_desorption": KT_VARifh2des_,       // IFH2DES: allow for H2 formation induced desorption (0=no, 1=yes)
+    "cr_desorption": KT_VARifcrdes_,                 // IFCRDES: allow for CR  induced desorption (0=no, 1=yes)
+    "photo_desorption": KT_VARifphdes_,              // IFPHDES: allow for photo desorption (0=no, 1=yes)
+    "thermal_desorption": KT_VARifthdes_,            // IFTHDES: allow for thermal desorption (0=no, 1=yes)
+    "binding_sites": KT_VARbindsites_             // Number density of binding sites per grain surface (default: 1.5d15 cm^-2) BINDSITES
   },
 
-  "chemical_heating": KT_VARifchemheat_,                ! Include chemical heating: IFCHEMHEAT. 1=yes, 0=no
+  "chemical_heating": KT_VARifchemheat_,                // Include chemical heating to the energy balance [0=no, 1=yes] IFCHEMHEAT
 
   "alfven_heating": {
     // Alfvén wave heating settings
-    "include": KT_VARifheat_alfven_,                       ! Include Alfvén heating: IHEAT_ALFVEN. 1=yes, 0=no
-    "velocity": KT_VARalfven_velocity_,                  ! Alfvén velocity (in cm/s): alfven_velocity
-    "column": KT_VARalfven_column_                    ! Column density where Alfvén heating becomes important (in cm^-2): alfven_column
+    "include": KT_VARifheat_alfven_,                       // Include Alfvén heating: IHEAT_ALFVEN. 1=yes, 0=no
+    "velocity": KT_VARalfven_velocity_,                  // Alfvén velocity (in cm/s): alfven_velocity
+    "column": KT_VARalfven_column_                    // Column density where Alfvén heating becomes important (in cm^-2): alfven_column
   },
 
   "numerical_params": {
     // Numerical parameters for the simulation
-    "initial_temperature": KT_VARtemp_start_,         ! Initial temperature guess (in K): TSTART. 0 means auto
-    "temperature_solution_method": KT_VARitmeth_,   ! Temperature solution method: ITMETH. 0: legacy, 1: Brent, 2: hybrid, 3: AMRSEARCH
-    "chemical_network_method": KT_VARichemeth_,       ! Chemical network solution method: ICHEMETH. 0=steady-state, 1=time-dependent
-    "newton_stepping_method": KT_VARinewtonstep_,        ! Newton stepping method: INEWTONSTEP. 0:legacy, 1:adaptive1, 2:symlogtanh
-    "newton_omega_neg": KT_VARomega_neg_,            ! Newton negative update parameter: omega_neg
-    "newton_omega_pos": KT_VARomega_pos_,            ! Newton positive update parameter: omega_pos
-    "newton_lambda": KT_VARlambda_newt_,               ! Newton lambda parameter: lambda
-    "use_conservation_equations": KT_VARuse_conservation_,    ! Use conservation equations: use_conservation. 1=yes, 0=no
-    "rescale_qf": KT_VARrescaleQF_,                    ! Rescale QF: rescaleQF. 1=yes, 0=no
-    "precond_lr": KT_VARprecondLR_,                    ! Use LR preconditioning: precondLR. 1=yes, 0=no
-    "resort_qf": KT_VARresortQF_,                     ! Resort QF: resortQF. 1=yes, 0=no
-    "use_time_dependent_if_no_convergence": KT_VARnconv_time_,        ! Switch to time-dependent if no convergence: nconv_time. 1=yes, 0=no
-    "use_time_dependent_instead_of_steady_state": KT_VARtime_dependent_,  ! Use time-dependent instead of steady-state: time_dependent. 1=yes, 0=no
-    "initial_time_step": KT_VARfirst_time_step_yrs_,       ! Initial time step (in s): first_time_step_yrs
-    "max_time": KT_VARmax_time_yrs_,                  ! Maximum integration time (in s): max_time_yrs
-    "num_time_steps": KT_VARnum_time_steps_,                ! Number of time steps (0 for auto): NTInum_time_stepsME
-    "use_dlsodes": KT_VARuse_dlsodes_,                   ! Use DLSODES solver: LDLSODES. 1=yes, 0=no
-    "use_dlsoda": KT_VARuse_dlsoda_,                    ! Use DLSODA solver: LDLSODA. 1=yes, 0=no
-    "use_dvodpk": KT_VARuse_dvodpk_,                    ! Use DVODPK solver: LDVODPK. 1=yes, 0=no
-    "ode_relative_tolerance": KT_VARrtol_chem_,   ! ODE relative tolerance: rtol_chem
-    "ode_absolute_tolerance": KT_VARatol_chem_,  ! ODE absolute tolerance: atol_chem
-    "first_step_size": KT_VARXhtry_,           ! First step size for ODE solver: Xhtry
-    "iteration_convergence_tolerance": KT_VARrtol_iter_,    ! Iteration convergence tolerance: rtol_iter
-    "max_iterations": KT_VARNiter_,               ! Maximum number of iterations: NITER
-    "step_size_co_dissociated": KT_VARstep1_,  ! Step size when CO is dissociated: step1
-    "step_size_co_not_dissociated": KT_VARstep2_,      ! Step size when CO is not dissociated: step2
-    "output_style": KT_VARihdfout_,                  ! Output style: IHDFout. 0 -> old style, 1 -> hdf files, 2 -> both format
-    "debug_level": KT_VARdbglvl_,                   ! Debug output level: dbglvl. 0=off, 1=error, 2=warining, 3=Info, 4=verbose
-    "chemchk_all": false,               ! CHEMCHK output ALL DEPTH POINT, ALL ITERATIIONS (VERY LARGE FILE!!)
-    "chemchk_end": true,                ! CHEMCHK output ALL DEPTH POINT, LAST ITERATIION
-    "chemchk_length": 5                 ! CHEMCHK number of reactions in output 
+    "initial_temperature": KT_VARtemp_start_,         // Start value for temperature (in K) use 0.0d0 to use internal heuristics to guess TSTART:
+    "temperature_solution_method": KT_VARitmeth_,   // Method of T solution (0: legacy, 1: Brent, 2: hybrid, 3: AMRSEARCH): ITMETH
+    "chemical_network_method": KT_VARichemeth_,       // Method of solving the chemical network (0=simple/DGESV, 1=advanced/DGESVX, 2=DSGESV):ICHEMETH
+    "newton_stepping_method": KT_VARinewtonstep_,        // Newton stepper specifications  INEWTONSTEP (0:legacy, 1:adaptive1, 2:symlogtanh  with omega_neg,omega_pos, lambda)
+    "newton_omega_neg": KT_VARomega_neg_,            // Newton stepping parameters for INEWTONSTEP=2 omega_neg
+    "newton_omega_pos": KT_VARomega_pos_,            // Newton stepping parameters for INEWTONSTEP=2 omega_pos
+    "newton_lambda": KT_VARlambda_newt_,               // Newton stepping parameters for INEWTONSTEP=2 lambda
+    "use_conservation_equations": KT_VARuse_conservation_,    // Apply elemental conservation equations (0=false, 1=true) use_conservation
+    "rescale_qf": KT_VARrescaleQF_,                    // Preconditioning of Jacobian and RHS vector F (0=false, 1=true) rescaleQF
+    "precond_lr": KT_VARprecondLR_,                    // Preconditioning of Jacobian and RHS vector F (0=false, 1=true) precondLR
+    "resort_qf": KT_VARresortQF_,                     // Preconditioning of Jacobian and RHS vector F (0=false, 1=true) resortQF
+    "use_time_dependent_if_no_convergence": KT_VARnconv_time_,        / Use time dependent chemistry if no convergence under steady state (0=false, 1=true) nconv_time
+    "use_time_dependent_instead_of_steady_state": KT_VARtime_dependent_, // Use time dependent chemistry instead of steady-state (0=false, 1=true) time_dependent
+    "initial_time_step": KT_VARfirst_time_step_yrs_,       // initial time step for time-dependent solution [yrs] first_time_step
+    "max_time": KT_VARmax_time_yrs_,                  // maximum time for time-dependent solution [yrs] max_time
+    "num_time_steps": KT_VARnum_time_steps_,                // Number of time-steps for fully time-dependent computation  num_time_steps (0=auto, 1 = 1 step, ...)
+    "use_dlsodes": KT_VARuse_dlsodes_,                   // choose DLSODES for time-dep computation (0=false, 1=true) use_DLSODES
+    "use_dlsoda": KT_VARuse_dlsoda_,                    // choose DLSODA for time-dep computation (0=false, 1=true) use_DLSODA
+    "use_dvodpk": KT_VARuse_dvodpk_,                    // choose DVODPK  for time-dep computation (0=false, 1=true) use_DVODPK
+    "ode_relative_tolerance": KT_VARrtol_chem_,   // relative error tolerance for time-dep ODE solver  RTOL
+    "ode_absolute_tolerance": KT_VARatol_chem_,  // absolute error tolerance for time-dep ODE solver  ATOL (is multiplied by total gas density)
+    "first_step_size": KT_VARXhtry_,           // First step for IVPS (in cm):   XHTRY
+    "iteration_convergence_tolerance": KT_VARrtol_iter_,    // relative error tolerance for iteration convergence checks  RTOL_ITER
+    "max_iterations": KT_VARNiter_,               // Maximum number of iterations: NITER
+    "step_size_co_dissociated": KT_VARstep1_,  // Step size when CO is dissociated: step1
+    "step_size_co_not_dissociated": KT_VARstep2_,      // Step size when CO is not dissociated: step2
+    "output_style": KT_VARihdfout_,                  // Output style ( 0: old style, only ASCII, 1: HDF4 files, 2: ASCII & HDF4, 3: HDF4 & HDF5 only 4: ASCII & HDF4 & HDF5)  )
+    "debug_level": KT_VARdbglvl_,                   // Debug output level: dbglvl. 0=off, 1=error, 2=warining, 3=Info, 4=verbose
+    "chemchk_all": false,               // CHEMCHK output ALL DEPTH POINT, ALL ITERATIIONS (VERY LARGE FILE////)
+    "chemchk_end": true,                // CHEMCHK output ALL DEPTH POINT, LAST ITERATIION
+    "chemchk_length": 5                 // CHEMCHK number of reactions in output 
   },
 
-  "species": KT_VARspecies_,
+  "species": KT_VARspecies_,          // List of chemical species to be considered in the model ("H","H2","ELECTR" are automatically added!)
 
   "element_abundances": {
     // Elemental abundances relative to total hydrogen
-    "reference": "Asplund et al. 2009, ARA&A, 47, 481 (Solar abundance)",  ! Reference for the abundance data
-    "he": KT_VARelfrac4_,                      ! Helium
-    "c": KT_VARelfrac12_ ,                       ! Carbon
-    "c13": KT_VARelfrac13_,                     ! Carbon-13
-    "n": KT_VARelfrac14_,                       ! Nitrogen
-    "o": KT_VARelfrac16_,                       ! Oxygen
-    "o18": KT_VARelfrac18_,                     ! Oxygen-18
-    "f": KT_VARelfrac19_,                       ! Fluorine
-    "ne": KT_VARelfrac20_,                       ! Neon
-    "na": KT_VARelfrac23_,                       ! Sodium
-    "mg": KT_VARelfrac24_,                       ! Magnesium
-    "al": KT_VARelfrac27_,                       ! Aluminum
-    "si": KT_VARelfrac28_,                      ! Silicon
-    "p": KT_VARelfrac31_,                       ! Phosphorus
-    "s": KT_VARelfrac32_,                       ! Sulfur
-    "cl": KT_VARelfrac35_,                       ! Chlorine
-    "k": KT_VARelfrac39_,                       ! Potassium
-    "ar": KT_VARelfrac40_,                      ! Argon
-    "ca": KT_VARelfrac41_,                       ! Calcium
-    "fe": KT_VARelfrac56_                        ! Iron
+    "reference": "Asplund et al. 2009, ARA&A, 47, 481 (Solar abundance)",  // Reference for the abundance data
+    "he": KT_VARelfrac4_,                      // Helium
+    "c": KT_VARelfrac12_ ,                       // Carbon
+    "c13": KT_VARelfrac13_,                     // Carbon-13
+    "n": KT_VARelfrac14_,                       // Nitrogen
+    "o": KT_VARelfrac16_,                       // Oxygen
+    "o18": KT_VARelfrac18_,                     // Oxygen-18
+    "f": KT_VARelfrac19_,                       // Fluorine
+    "ne": KT_VARelfrac20_,                       // Neon
+    "na": KT_VARelfrac23_,                       // Sodium
+    "mg": KT_VARelfrac24_,                       // Magnesium
+    "al": KT_VARelfrac27_,                       // Aluminum
+    "si": KT_VARelfrac28_,                      // Silicon
+    "p": KT_VARelfrac31_,                       // Phosphorus
+    "s": KT_VARelfrac32_,                       // Sulfur
+    "cl": KT_VARelfrac35_,                       // Chlorine
+    "k": KT_VARelfrac39_,                       // Potassium
+    "ar": KT_VARelfrac40_,                      // Argon
+    "ca": KT_VARelfrac41_,                       // Calcium
+    "fe": KT_VARelfrac56_                        // Iron
   }
 }
