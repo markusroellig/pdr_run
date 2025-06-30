@@ -327,8 +327,6 @@ class DatabaseManager:
                 options['connect_args'].update({
                     'autocommit': True,
                     'connect_timeout': 60,           # Connection timeout
-                    'read_timeout': 600,             # Read timeout (5 minutes)
-                    'write_timeout': 600,            # Write timeout (5 minutes)
                     'sql_mode': 'TRADITIONAL',
                 })
                 
