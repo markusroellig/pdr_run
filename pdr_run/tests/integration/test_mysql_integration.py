@@ -22,8 +22,17 @@ from sqlalchemy import text
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# --- START: Sandbox-aware MySQL Configuration ---
+# Read test database configuration from environment variables, with defaults for local testing.
+# The sandbox environment will set these variables to point to the provided MySQL service.
+TEST_MYSQL_HOST = os.environ.get("PDR_TEST_DB_HOST", "localhost")
+TEST_MYSQL_PORT = int(os.environ.get("PDR_TEST_DB_PORT", 3306))
+TEST_MYSQL_ROOT_USER = os.environ.get("PDR_TEST_DB_ROOT_USER", "root")
+TEST_MYSQL_ROOT_PASSWORD = os.environ.get("PDR_TEST_DB_ROOT_PASSWORD", "rootpassword")
+# --- END: Sandbox-aware MySQL Configuration ---
+
 # Fix the Python path - go up to the directory containing the pdr_run package
-# Current: /home/roellig/pdr/pdr_run/pdr_run/tests/integration/test_mysql_integration.py
+# Current: /home/roellig/pdr/pdr/pdr_run/pdr_run/tests/integration/test_mysql_integration.py
 # Target:  /home/roellig/pdr/pdr/pdr_run (contains pdr_run package)
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent  # Go up 4 levels
@@ -57,17 +66,19 @@ def is_mysql_available():
     if not MYSQL_AVAILABLE:
         return False
     try:
-        # Attempt a direct connection, ignoring environment variables
+        # Attempt a direct connection using the test configuration
         conn = mysql.connector.connect(
-            host='localhost',
-            port=3306,
-            user='root',
-            password='rootpassword', # Standard password for test setup
+            host=TEST_MYSQL_HOST,
+            port=TEST_MYSQL_PORT,
+            user=TEST_MYSQL_ROOT_USER,
+            password=TEST_MYSQL_ROOT_PASSWORD,
             connection_timeout=3  # Fail fast
         )
         conn.close()
+        logger.info(f"✓ MySQL service is available at {TEST_MYSQL_HOST}:{TEST_MYSQL_PORT}")
         return True
-    except mysql.connector.Error:
+    except mysql.connector.Error as err:
+        logger.warning(f"✗ Could not connect to MySQL at {TEST_MYSQL_HOST}:{TEST_MYSQL_PORT}. Reason: {err}")
         return False
 
 class MySQLIntegrationTest:
@@ -120,10 +131,10 @@ class MySQLIntegrationTest:
     def create_test_database(self):
         """Create test database using root credentials."""
         root_config = {
-            'host': 'localhost',
-            'port': 3306,
-            'user': 'root',
-            'password': 'rootpassword',
+            'host': TEST_MYSQL_HOST,
+            'port': TEST_MYSQL_PORT,
+            'user': TEST_MYSQL_ROOT_USER,
+            'password': TEST_MYSQL_ROOT_PASSWORD,
             'autocommit': True
         }
         
@@ -155,10 +166,10 @@ class MySQLIntegrationTest:
     def cleanup_test_database(self):
         """Clean up test database."""
         root_config = {
-            'host': 'localhost',
-            'port': 3306,
-            'user': 'root',
-            'password': 'rootpassword',
+            'host': TEST_MYSQL_HOST,
+            'port': TEST_MYSQL_PORT,
+            'user': TEST_MYSQL_ROOT_USER,
+            'password': TEST_MYSQL_ROOT_PASSWORD,
             'autocommit': True
         }
         
@@ -179,10 +190,10 @@ class MySQLIntegrationTest:
         try:
             # Try to connect to MySQL service
             test_config = {
-                'host': 'localhost',
-                'port': 3306,
-                'user': 'root',
-                'password': 'rootpassword',
+                'host': TEST_MYSQL_HOST,
+                'port': TEST_MYSQL_PORT,
+                'user': TEST_MYSQL_ROOT_USER,
+                'password': TEST_MYSQL_ROOT_PASSWORD,
                 'connection_timeout': 5
             }
             
