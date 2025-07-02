@@ -321,14 +321,22 @@ class DatabaseManager:
             # Add specific options for MySQL
             if db_type == 'mysql':
                 options['connect_args'] = self.config.get('connect_args', {})
-                # Add MySQL specific connection args to handle timeouts
+                # Add MySQL specific connection args to handle long-running operations
                 if 'connect_args' not in self.config:
                     options['connect_args'] = {}
-                options['connect_args'].update({
+                
+                # Merge default timeouts with user-provided connect_args
+                default_mysql_args = {
                     'autocommit': True,
-                    'connect_timeout': 60,           # Connection timeout
+                    'connect_timeout': 300,      # 5 minutes for connection establishment
                     'sql_mode': 'TRADITIONAL',
-                })
+                    # Note: wait_timeout and interactive_timeout are set via SQL commands
+                }
+                
+                # Start with defaults, then apply user overrides
+                final_connect_args = default_mysql_args.copy()
+                final_connect_args.update(options['connect_args'])
+                options['connect_args'] = final_connect_args
                 
         return options
         
@@ -351,6 +359,9 @@ class DatabaseManager:
                 cursor = dbapi_connection.cursor()
                 cursor.execute("SET SESSION sql_mode='TRADITIONAL'")
                 cursor.execute("SET SESSION time_zone='+00:00'")
+                # Set long timeouts for long-running processes
+                cursor.execute("SET SESSION wait_timeout=86400")
+                cursor.execute("SET SESSION interactive_timeout=86400")
                 cursor.close()
                 
     @property

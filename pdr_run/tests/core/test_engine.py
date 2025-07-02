@@ -4,7 +4,8 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 
-from pdr_run.core.engine import run_model, run_parameter_grid
+from pdr_run.core.engine import run_model, run_parameter_grid, _calculate_cpu_count
+
 from sqlalchemy.orm import sessionmaker
 from pdr_run.database.connection import init_db
 
@@ -81,15 +82,24 @@ def test_cpu_calculation():
     with patch('pdr_run.core.engine.multiprocessing.cpu_count') as mock_cpu_count:
         # System has 8 CPUs
         mock_cpu_count.return_value = 8
-        
+
         # With default reserved CPUs (2)
-        cpus = run_parameter_grid._calculate_cpu_count(0, 2)
+        cpus = _calculate_cpu_count(0, 2)
         assert cpus == 6
-        
-        # With custom reserved CPUs
-        cpus = run_parameter_grid._calculate_cpu_count(0, 4)
+
+        # With 4 reserved CPUs
+        cpus = _calculate_cpu_count(0, 4)
         assert cpus == 4
-        
-        # With explicitly specified CPUs
-        cpus = run_parameter_grid._calculate_cpu_count(3, 2)
-        assert cpus == 3
+
+        # User requests 10 CPUs, but only 6 are available
+        cpus = _calculate_cpu_count(10, 2)
+        assert cpus == 6
+
+        # User requests 4 CPUs, which is available
+        cpus = _calculate_cpu_count(4, 2)
+        assert cpus == 4
+
+        # System has only 1 CPU
+        mock_cpu_count.return_value = 1
+        cpus = _calculate_cpu_count(0, 0)
+        assert cpus == 1

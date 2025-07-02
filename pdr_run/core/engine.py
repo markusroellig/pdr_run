@@ -585,11 +585,14 @@ def _calculate_cpu_count(requested_cpus=0, reserved_cpus=2):
     import multiprocessing
     
     available_cpus = multiprocessing.cpu_count()
+    usable_cpus = max(1, available_cpus - reserved_cpus)
     
     if requested_cpus > 0:
-        return min(requested_cpus, available_cpus)
+        # Cap the request at the number of usable CPUs, not total available
+        return min(requested_cpus, usable_cpus)
     else:
-        return max(1, available_cpus - reserved_cpus)
+        # If no request, return all usable CPUs
+        return usable_cpus
 
 def _build_default_config(params=None):
     """Build default configuration from default_config.py with environment variable overrides."""
