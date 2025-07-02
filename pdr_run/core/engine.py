@@ -338,26 +338,25 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
 
 
 def run_instance(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False):
-    """Run a single PDR model instance.
-    
-    This function handles the infrastructure setup (directories, executables, templates)
-    and delegates the actual model execution to the model-specific implementation.
-        Args:
-        job_id (int): Job ID
-        config (dict, optional): Configuration. Defaults to None.
-        force_onion (bool): If True, run onion even if PDR model was skipped.
-        json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
-        keep_tmp (bool): If True, do not delete temporary directory after run.
-    Returns:
-        list: Log lines or error messages.
-    """
-    #start_time = time.time()
+    """Run a single PDR model instance."""
     start_time_instance = time.time()
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"keep_tmp flag for job {job_id}: {keep_tmp}")
 
+    # FIX: Pass database config to worker (same pattern as create_database_entries)
+    db_config = None
+    if config and 'database' in config:
+        db_config = config['database']
+        logger.debug(f"Using database config from provided config in worker: {db_config}")
     
-    db_manager = get_db_manager()
+    db_manager = get_db_manager(db_config)  # Pass config to worker
+    
+    # Ensure tables exist in this worker process
+    try:
+        db_manager.create_tables()
+    except Exception as e:
+        logger.warning(f"Job {job_id}: Could not ensure database tables exist: {e}")
+    
     session = db_manager.get_session()
     job = session.get(PDRModelJob, job_id)
     
@@ -559,18 +558,31 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
         output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
         for line in output:
             logger.info(f"[Job {job_id}]: {line}")
-    except Exception as e: # This catches errors re-raised from run_instance or new ones here
+    except Exception as e:
         logger.error(f"Critical error in run_instance_wrapper for job {job_id}: {str(e)}", exc_info=True)
         
-        # Update job status
-        db_manager = get_db_manager()
-        session = db_manager.get_session()
-        # Replace deprecated query.get() with session.get()
-        job = session.get(PDRModelJob, job_id)
-        if job:
-            job.pending = False
-            job.status = "exception"
-            session.commit()
+        # FIX: Pass database config to worker processes
+        try:
+            # Extract database config if available (same as in create_database_entries)
+            db_config = None
+            if config and 'database' in config:
+                db_config = config['database']
+                logger.debug(f"Using database config from provided config in worker: {db_config}")
+            
+            db_manager = get_db_manager(db_config)  # Pass the config to worker
+            
+            # Ensure tables are created in this worker process  
+            db_manager.create_tables()
+            
+            session = db_manager.get_session()
+            job = session.get(PDRModelJob, job_id)
+            if job:
+                job.pending = False
+                job.status = "exception"
+                session.commit()
+                session.close()
+        except Exception as db_error:
+            logger.error(f"Failed to update job status for job {job_id} after exception: {db_error}")
 
 def _calculate_cpu_count(requested_cpus=0, reserved_cpus=2):
     """Calculate the number of CPUs to use.
