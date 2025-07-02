@@ -8,12 +8,12 @@ recovery, and error scenarios that users might encounter.
 import os
 import sys
 import pytest
+from unittest.mock import patch, MagicMock
 import tempfile
 import time
 import threading
 import uuid
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 import subprocess
 import logging
 from sqlalchemy import text
@@ -51,6 +51,24 @@ try:
 except ImportError:
     logger.warning("mysql-connector-python not available. Install with: pip install mysql-connector-python")
 
+# Helper to check for MySQL availability
+def is_mysql_available():
+    """Check if MySQL server is available using a direct, raw connection."""
+    if not MYSQL_AVAILABLE:
+        return False
+    try:
+        # Attempt a direct connection, ignoring environment variables
+        conn = mysql.connector.connect(
+            host='localhost',
+            port=3306,
+            user='root',
+            password='rootpassword', # Standard password for test setup
+            connection_timeout=3  # Fail fast
+        )
+        conn.close()
+        return True
+    except mysql.connector.Error:
+        return False
 
 class MySQLIntegrationTest:
     """Comprehensive MySQL integration test suite."""
@@ -560,6 +578,10 @@ def test_mysql_integration_with_pytest():
 @pytest.mark.integration
 def test_mysql_integration_manual():
     """Manual MySQL integration test (use with pytest -m mysql)."""
+    # Skip test if MySQL is not available
+    if not is_mysql_available():
+        pytest.skip("MySQL service not available on localhost:3306. Skipping integration test.")
+
     test_suite = MySQLIntegrationTest()
     assert test_suite.run_all_tests(), "MySQL integration tests failed"
 

@@ -164,14 +164,15 @@ def test_config_file_loading(mock_environment, mock_engine, test_config_file):
 def test_error_handling(mock_environment):
     """Test error handling during model execution."""
     test_args = ['pdr_run', '--model-name', 'error_test', '--single', '--dens', '3.0']
-    
+
+    # The patch target must be where the function is *used*, not where it's defined.
     with patch('sys.argv', test_args), \
-         patch('pdr_run.core.engine.run_model', side_effect=Exception("Test error")), \
+         patch('pdr_run.cli.runner.run_model', side_effect=Exception("Test error")), \
          patch('pdr_run.cli.runner.logger') as mock_logger:
-        
+
         # Should log the error but not crash
         main()
-        
+
         # Verify error was logged
         mock_logger.error.assert_called()
 
