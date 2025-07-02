@@ -337,8 +337,6 @@ class SFTPStorage(RemoteStorage):
             self.logger.debug(f"Error checking file existence: {e}")
             return False
 
-# ...existing code...
-
 class RCloneStorage(Storage):
     """RClone-based remote storage implementation."""
     
@@ -348,6 +346,7 @@ class RCloneStorage(Storage):
         self.remote = config.get('rclone_remote', 'default')
         self.mount_point = config.get('mount_point', os.path.join(self.base_dir, 'mnt'))
         self.use_mount = config.get('use_mount', False)
+        self.remote_path_prefix = config.get('remote_path_prefix', None)
         
         # Add logger for consistency with SFTPStorage
         self.logger = logging.getLogger("dev")
@@ -370,6 +369,13 @@ class RCloneStorage(Storage):
     
     def _get_full_remote_path(self, remote_path):
         """Construct full remote path combining base path and relative path."""
+        
+        # If a prefix is defined, remove it from the remote path
+        if self.remote_path_prefix and remote_path.startswith(self.remote_path_prefix):
+            remote_path = remote_path[len(self.remote_path_prefix):]
+            # Remove leading slash if any to make it a relative path
+            remote_path = remote_path.lstrip('/')
+
         if self.remote_base_path:
             # Join base path with remote path
             full_path = os.path.join(self.remote_base_path, remote_path).replace('\\', '/')
