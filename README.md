@@ -182,6 +182,8 @@ storage:
 export PDR_STORAGE_TYPE=rclone
 export PDR_STORAGE_RCLONE_REMOTE=your_remote_name
 export PDR_STORAGE_DIR=/path/to/local/mount/point
+# Optional: Set a prefix to trim from remote paths to create cleaner directory structures.
+export PDR_STORAGE_REMOTE_PATH_PREFIX=/path/to/trim
 ```
 
 Or in `config.yaml`:
@@ -191,6 +193,10 @@ storage:
   rclone_remote: your_remote_name
   base_dir: /path/to/mount/point
   use_mount: false
+  # Optional: Specify a path prefix to remove from the remote destination path.
+  # This is useful for creating cleaner remote directory structures by removing
+  # absolute local path components.
+  remote_path_prefix: /path/to/trim/from/remote/destination
 ```
 
 ## MySQL Setup
