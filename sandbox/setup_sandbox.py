@@ -10,17 +10,17 @@ from pathlib import Path
 def create_directory_structure():
     """Create the sandbox directory structure."""
     directories = [
-        "sandbox/storage",
-        "sandbox/sqlite",
-        "sandbox/logs",
-        "sandbox/pdr_executables",
-        "sandbox/mysql/init",
-        "sandbox/postgres/init",
-        "sandbox/sftp_data",
-        "sandbox/test_data",
-        "sandbox/configs",
-        "sandbox/environments",
-        "sandbox/templates"
+        "storage",
+        "sqlite", 
+        "logs",
+        "pdr_executables",
+        "mysql/init",
+        "postgres/init",
+        "sftp_data",
+        "test_data",
+        "configs",
+        "environments",
+        "templates"
     ]
     
     for directory in directories:
@@ -105,11 +105,14 @@ def setup_database_init_scripts():
     mysql_init = """
 -- MySQL initialization script for PDR sandbox
 CREATE DATABASE IF NOT EXISTS pdr_test;
-USE pdr_test;
 
--- Grant permissions to pdr_user
+-- Create user first, then grant permissions
+CREATE USER IF NOT EXISTS 'pdr_user'@'%' IDENTIFIED BY 'pdr_password';
 GRANT ALL PRIVILEGES ON pdr_test.* TO 'pdr_user'@'%';
 FLUSH PRIVILEGES;
+
+-- Switch to the database
+USE pdr_test;
 
 -- Create a test table to verify connection
 CREATE TABLE IF NOT EXISTS connection_test (

@@ -11,6 +11,11 @@ from typing import Optional, Dict, Any, Union
 from contextlib import contextmanager
 from urllib.parse import quote_plus
 import importlib.util
+import uuid
+import threading
+import time
+from datetime import datetime
+import copy
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -35,6 +40,21 @@ class DatabaseManager:
         self.config = self._load_config(config)
         self._engine: Optional[Engine] = None
         self._session_factory: Optional[sessionmaker] = None
+        self.manager_id = uuid.uuid4().hex[:8]
+        self._diagnostics_enabled: bool = bool(self.config.get('diagnostics_enabled', False))
+        self._pool_lock = threading.RLock()
+        self._pool_metrics = {
+            'manager_id': self.manager_id,
+            'engine_id': None,
+            'created_at': time.time(),
+            'connects': 0,
+            'checkouts': 0,
+            'checkins': 0,
+            'invalidate': 0,
+            'disconnects': 0,
+            'last_event': None,
+            'event_log': []
+        }
         
     def _load_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Load and validate database configuration with proper precedence.
@@ -279,6 +299,12 @@ class DatabaseManager:
         # Create engine
         engine = create_engine(connection_string, **engine_options)
         
+        if self._diagnostics_enabled:
+            engine_id = uuid.uuid4().hex[:8]
+            self._pool_metrics['engine_id'] = engine_id
+            self._install_pool_metrics(engine, engine_id)
+            self._log_diagnostics_header(engine, engine_options)
+        
         # Add event listeners for connection management
         self._setup_engine_events(engine)
         
@@ -340,6 +366,131 @@ class DatabaseManager:
                 
         return options
         
+    def _install_pool_metrics(self, engine: Engine, engine_id: str) -> None:
+        """Attach diagnostic handlers to the SQLAlchemy connection pool."""
+        if not self._diagnostics_enabled:
+            return
+        
+        pool = engine.pool
+        
+        def _log_event(event_name: str, payload: Optional[Dict[str, Any]] = None) -> None:
+            self._record_pool_event(engine, event_name, payload or {})
+        
+        def _on_connect(dbapi_connection, connection_record):
+            payload = {
+                'connection_id': getattr(connection_record, 'connection_id', None),
+                'dbapi_id': hex(id(dbapi_connection))
+            }
+            _log_event('connects', payload)
+        
+        def _on_checkout(dbapi_connection, connection_record, connection_proxy):
+            payload = {
+                'connection_id': getattr(connection_record, 'connection_id', None),
+                'dbapi_id': hex(id(dbapi_connection)),
+                'thread_ident': threading.get_ident()
+            }
+            _log_event('checkouts', payload)
+        
+        def _on_checkin(dbapi_connection, connection_record):
+            payload = {
+                'connection_id': getattr(connection_record, 'connection_id', None),
+                'dbapi_id': hex(id(dbapi_connection))
+            }
+            _log_event('checkins', payload)
+        
+        def _on_invalidate(dbapi_connection, connection_record, exception):
+            payload = {
+                'connection_id': getattr(connection_record, 'connection_id', None),
+                'dbapi_id': hex(id(dbapi_connection)),
+                'exception': str(exception) if exception else None
+            }
+            _log_event('invalidate', payload)
+        
+        def _on_close(dbapi_connection, connection_record):
+            payload = {
+                'connection_id': getattr(connection_record, 'connection_id', None),
+                'dbapi_id': hex(id(dbapi_connection))
+            }
+            _log_event('disconnects', payload)
+        
+        event.listen(pool, "connect", _on_connect)
+        event.listen(pool, "checkout", _on_checkout)
+        event.listen(pool, "checkin", _on_checkin)
+        event.listen(pool, "invalidate", _on_invalidate)
+        event.listen(pool, "close", _on_close)
+        
+        logger.debug(
+            "Enabled pool diagnostics for manager=%s engine=%s pool_class=%s",
+            self.manager_id,
+            engine_id,
+            pool.__class__.__name__,
+        )
+    
+    def _record_pool_event(self, engine: Engine, event_name: str, payload: Dict[str, Any]) -> None:
+        """Record a pool lifecycle event with timestamps and pool status."""
+        if not self._diagnostics_enabled:
+            return
+        
+        timestamp = time.time()
+        human_time = datetime.utcnow().isoformat(timespec='seconds') + "Z"
+        pool = engine.pool
+        status_callable = getattr(pool, "status", None)
+        with self._pool_lock:
+            if event_name in self._pool_metrics:
+                self._pool_metrics[event_name] += 1
+            else:
+                self._pool_metrics[event_name] = 1
+            event_record = {
+                'utc': human_time,
+                'timestamp': timestamp,
+                'pid': os.getpid(),
+                'event': event_name,
+                'pool_status': status_callable() if callable(status_callable) else str(status_callable),
+                'payload': payload
+            }
+            self._pool_metrics['last_event'] = event_record
+            self._pool_metrics['event_log'].append(event_record)
+            if len(self._pool_metrics['event_log']) > 200:
+                self._pool_metrics['event_log'] = self._pool_metrics['event_log'][-200:]
+        logger.debug(
+            "DB pool event manager=%s engine=%s event=%s payload=%s",
+            self.manager_id,
+            self._pool_metrics.get('engine_id'),
+            event_name,
+            payload
+        )
+    
+    def _log_diagnostics_header(self, engine: Engine, options: Dict[str, Any]) -> None:
+        """Emit a human-readable diagnostics packet describing the pool."""
+        if not self._diagnostics_enabled:
+            return
+        
+        pool = engine.pool
+        size = getattr(pool, "size", lambda: "n/a")()
+        max_overflow = getattr(pool, "_max_overflow", "n/a")
+        logger.info(
+            "Database diagnostics packet\n"
+            "  manager_id        : %s\n"
+            "  engine_id         : %s\n"
+            "  backend           : %s\n"
+            "  pool_class        : %s\n"
+            "  pool_size         : %s\n"
+            "  max_overflow      : %s\n"
+            "  pool_timeout (s)  : %s\n"
+            "  pool_recycle (s)  : %s\n"
+            "  pool_pre_ping     : %s\n"
+            "  diagnostics_mode  : enabled",
+            self.manager_id,
+            self._pool_metrics.get('engine_id'),
+            self.config.get('type'),
+            pool.__class__.__name__,
+            size,
+            max_overflow,
+            options.get('pool_timeout'),
+            options.get('pool_recycle'),
+            options.get('pool_pre_ping'),
+        )
+        
     def _setup_engine_events(self, engine: Engine) -> None:
         """Set up engine event listeners for connection management."""
         db_type = self.config.get('type', 'sqlite')
@@ -380,6 +531,53 @@ class DatabaseManager:
                 expire_on_commit=False  # Prevent issues with detached instances
             )
         return self._session_factory
+        
+    def get_diagnostics_snapshot(self, include_events: bool = False) -> Dict[str, Any]:
+        """Return a copy of collected diagnostics information."""
+        if not self._diagnostics_enabled:
+            return {
+                'manager_id': self.manager_id,
+                'diagnostics_enabled': False,
+            }
+        
+        with self._pool_lock:
+            snapshot = copy.deepcopy(self._pool_metrics)
+        
+        pool = self.engine.pool
+        size_callable = getattr(pool, "size", None)
+        checked_out_callable = getattr(pool, "checkedout", None)
+        overflow_callable = getattr(pool, "overflow", None)
+        snapshot['diagnostics_enabled'] = True
+        snapshot['pool_capacity'] = size_callable() if callable(size_callable) else None
+        snapshot['pool_checked_out'] = checked_out_callable() if callable(checked_out_callable) else None
+        snapshot['pool_overflow'] = overflow_callable() if callable(overflow_callable) else None
+        if snapshot['pool_capacity'] is not None and snapshot['pool_checked_out'] is not None:
+            snapshot['pool_available'] = max(snapshot['pool_capacity'] - snapshot['pool_checked_out'], 0)
+        if not include_events:
+            snapshot.pop('event_log', None)
+        return snapshot
+    
+    def log_diagnostics(self, context: str, include_events: bool = False) -> None:
+        """Log a concise diagnostics summary for the current engine."""
+        if not self._diagnostics_enabled:
+            return
+        
+        snapshot = self.get_diagnostics_snapshot(include_events=include_events)
+        logger.info(
+            "DB diagnostics summary [%s] manager=%s engine=%s connects=%s checkouts=%s checkins=%s "
+            "checked_out=%s overflow=%s available=%s",
+            context,
+            snapshot.get('manager_id'),
+            snapshot.get('engine_id'),
+            snapshot.get('connects'),
+            snapshot.get('checkouts'),
+            snapshot.get('checkins'),
+            snapshot.get('pool_checked_out'),
+            snapshot.get('pool_overflow'),
+            snapshot.get('pool_available'),
+        )
+        if include_events:
+            logger.debug("DB diagnostics events [%s]: %s", context, snapshot.get('event_log', []))
         
     def get_session(self) -> Session:
         """Get a new database session."""

@@ -75,9 +75,13 @@ DATABASE_CONFIG = {
     'database': 'pdr_test',
     'username': 'pdr_user',
     'password': None,  # Change this to None to trigger validation
-    'pool_recycle': 280,
-    'pool_pre_ping': True,
+    'pool_size': 20,    # Accommodate multiple workers
+    'max_overflow': 30, # Allow burst capacity
+    'pool_timeout': 60, # Reasonable wait time
+    'pool_recycle': 3600, # Hourly connection recycling
+    'pool_pre_ping': True, # Validate connections
     'connect_args': {},
+    'diagnostics_enabled': True,
 }
 
 # File storage configuration

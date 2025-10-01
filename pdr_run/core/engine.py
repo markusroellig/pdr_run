@@ -73,6 +73,8 @@ import shutil
 import multiprocessing
 import time
 import traceback
+import json
+from pathlib import Path
 from datetime import datetime
 from joblib import Parallel, delayed
 
@@ -150,191 +152,199 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
 
     
     db_manager = get_db_manager(db_config)  # Pass the database config
+    db_manager.log_diagnostics("main:create_database_entries:manager_ready")
     
     # CREATE TABLES BEFORE GETTING SESSION
     try:
         db_manager.create_tables()
         logger.info("Database tables created successfully")
+        db_manager.log_diagnostics("main:create_database_entries:post_create_tables")
     except Exception as e:
         logger.error(f"Failed to create database tables: {e}")
         raise
     
     session = db_manager.get_session()
     logger.debug(f"Database session established")
-    
-    # Get configuration
-    if config is None:
-        logger.info("No config provided, using defaults")
-        config = {
-            'pdr': PDR_CONFIG,
-            'parameters': DEFAULT_PARAMETERS
-        }
-    
-    # Map model_params to parameters for backward compatibility
-    if 'model_params' in config and 'parameters' not in config:
-        logger.info("Mapping 'model_params' to 'parameters' for compatibility")
-        config['parameters'] = config['model_params']
-    
-    # Log configuration details
-    logger.debug("Configuration details:")
-    for section_name, section in config.items():
-        if isinstance(section, dict):
-            logger.debug(f"  {section_name}:")
-            for key, value in section.items():
-                logger.debug(f"    {key}: {value}")
-        else:
-            logger.debug(f"  {section_name}: {section}")
-    
-    # Get executable info
-    pdr_file_name = config['pdr'].get('pdr_file_name', PDR_CONFIG['pdr_file_name'])
-    pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
-    
-    full_pdr_path = os.path.join(pdr_dir, pdr_file_name)
-    logger.info(f"Using PDR executable: {full_pdr_path}")
-    
-    # Check executable exists
-    if not os.path.exists(full_pdr_path):
-        logger.error(f"PDR executable not found at {full_pdr_path}")
-        logger.debug(f"Directory contents of {pdr_dir}: {os.listdir(pdr_dir) if os.path.exists(pdr_dir) else 'directory not found'}")
-    
-    # Create executable entry
-    logger.debug(f"Getting code revision for {full_pdr_path}")
-    code_revision = get_code_revision(full_pdr_path)
-    compilation_date = get_compilation_date(full_pdr_path)
-    sha256_sum = get_digest(full_pdr_path)
-    
-    logger.info(f"Executable: {pdr_file_name}")
-    logger.info(f"Code revision: {code_revision}")
-    logger.info(f"Compiled at: {compilation_date.strftime('%c')}")
-    logger.info(f"SHA-256 hash: {sha256_sum}")
-    
-    exe = get_or_create(
-        session,
-        KOSMAtauExecutable,
-        code_revision=code_revision,
-        compilation_date=compilation_date,
-        executable_file_name=pdr_file_name,
-        executable_full_path=pdr_dir,
-        sha256_sum=sha256_sum
-    )
-    
-    # Create user entry
-    username = config.get('user', {}).get('username', 'Default User')
-    email = config.get('user', {}).get('email', 'user@example.com')
-    
-    logger.info(f"User: {username}, Email: {email}")
-    
-    user = get_or_create(
-        session,
-        User,
-        username=username,
-        email=email
-    )
-    
-    # Create model name entry
-    model_name_id = get_model_name_id(model_name, model_path, session)
-    
-    logger.info(f"Model name: {model_name}")
-    logger.info(f"Model ID: {model_name_id}")
-    
-    # Create chemical database entry
-    chem_database = config['pdr'].get(
-        'chem_database', 
-        PDR_CONFIG['chem_database']
-    )
-    chem_origin = config['pdr'].get(
-        'chem_origin', 
-        PDR_CONFIG['chem_origin']
-    )
-    
-    chem = get_or_create(
-        session,
-        ChemicalDatabase,
-        chem_rates_file_name=chem_database,
-        chem_rates_full_path=os.path.join(pdr_dir, 'pdrinpdata', chem_database),
-        database_origin=chem_origin
-    )
-    
-    logger.info(f"Chemical database: {chem_database}")
-    logger.info(f"Chemical database ID: {chem.id}")
-    
-    # Create parameter and job entries
-    parameter_ids = []
-    job_ids = []
-    
-    # Fix here: Extract single values for alpha and rcore
-    alpha_param = config['parameters'].get('alpha', DEFAULT_PARAMETERS['alpha'])
-    rcore_param = config['parameters'].get('rcore', DEFAULT_PARAMETERS['rcore'])
-    
-    # Convert to numeric if list
-    alpha = alpha_param[0] if isinstance(alpha_param, list) else alpha_param
-    rcore = rcore_param[0] if isinstance(rcore_param, list) else rcore_param
- 
-    logger.debug(f"Using alpha={alpha} (from {alpha_param}) and rcore={rcore} (from {rcore_param})")
-    
-    species = config['parameters'].get('species', DEFAULT_PARAMETERS['species'])
-    chemistry = config['parameters'].get('chemistry', DEFAULT_PARAMETERS.get('chemistry', ['umist']))
-    
-    for p in param_combinations:
-        logger.info(f"Creating entry for parameters: {p}")
-        
-        # Calculate radius
-        rtot = compute_radius(
-            from_string_to_par(p[2]),  # mass
-            from_string_to_par(p[1]),  # density
-            alpha,
-            rcore
-        )
-        
-        # Create parameter entry
-        param_dict = {
-            'zmetal': eval(p[0]) * 0.01,
-            'xnsur': from_string_to_par(p[1]),
-            'alpha': alpha,
-            'rcore': rcore,
-            'rtot': rtot,
-            'mass': from_string_to_par(p[2]),
-            'sint': from_string_to_par(p[3]),
-            'model_name_id': model_name_id,
-            'species': list_to_string(chemistry) if isinstance(chemistry, list) else chemistry
-        }
-        
-        # Add non-default parameters
-        non_default_params = config.get('non_default_parameters', {})
-        param_dict.update(non_default_params)
-        
-        # Ensure all list parameters are properly converted to strings
-        for key, value in param_dict.items():
-            if isinstance(value, list):
-                param_dict[key] = list_to_string(value)
-        
-        param = get_or_create(session, KOSMAtauParameters, **param_dict)
-        parameter_ids.append(param.id)
-        
-        # Create job entry
-        model = f"{p[0]}_{p[1]}_{p[2]}_{p[3]}_00"
-        
-        job = get_or_create(
+
+    try:
+        # Get configuration
+        if config is None:
+            logger.info("No config provided, using defaults")
+            config = {
+                'pdr': PDR_CONFIG,
+                'parameters': DEFAULT_PARAMETERS
+            }
+
+        # Map model_params to parameters for backward compatibility
+        if 'model_params' in config and 'parameters' not in config:
+            logger.info("Mapping 'model_params' to 'parameters' for compatibility")
+            config['parameters'] = config['model_params']
+
+        # Log configuration details
+        logger.debug("Configuration details:")
+        for section_name, section in config.items():
+            if isinstance(section, dict):
+                logger.debug(f"  {section_name}:")
+                for key, value in section.items():
+                    logger.debug(f"    {key}: {value}")
+            else:
+                logger.debug(f"  {section_name}: {section}")
+
+        # Get executable info
+        pdr_file_name = config['pdr'].get('pdr_file_name', PDR_CONFIG['pdr_file_name'])
+        pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
+
+        full_pdr_path = os.path.join(pdr_dir, pdr_file_name)
+        logger.info(f"Using PDR executable: {full_pdr_path}")
+
+        # Check executable exists
+        if not os.path.exists(full_pdr_path):
+            logger.error(f"PDR executable not found at {full_pdr_path}")
+            logger.debug(f"Directory contents of {pdr_dir}: {os.listdir(pdr_dir) if os.path.exists(pdr_dir) else 'directory not found'}")
+
+        # Create executable entry
+        logger.debug(f"Getting code revision for {full_pdr_path}")
+        code_revision = get_code_revision(full_pdr_path)
+        compilation_date = get_compilation_date(full_pdr_path)
+        sha256_sum = get_digest(full_pdr_path)
+
+        logger.info(f"Executable: {pdr_file_name}")
+        logger.info(f"Code revision: {code_revision}")
+        logger.info(f"Compiled at: {compilation_date.strftime('%c')}")
+        logger.info(f"SHA-256 hash: {sha256_sum}")
+
+        exe = get_or_create(
             session,
-            PDRModelJob,
-            model_name_id=model_name_id,
-            model_job_name=model,
-            user_id=user.id,
-            kosmatau_parameters_id=param.id,
-            kosmatau_executable_id=exe.id,
-            output_directory=model_path,
-            output_hdf4_file=f'pdr{model}.hdf',
-            pending=True,
-            onion_species=list_to_string(species),
-            chemical_database_id=chem.id
+            KOSMAtauExecutable,
+            code_revision=code_revision,
+            compilation_date=compilation_date,
+            executable_file_name=pdr_file_name,
+            executable_full_path=pdr_dir,
+            sha256_sum=sha256_sum
         )
-        
-        job_ids.append(job.id)
-    
-    logger.info(f"Created {len(parameter_ids)} parameter sets")
-    logger.info(f"Created {len(job_ids)} job entries")
-    
-    return parameter_ids, job_ids
+
+        # Create user entry
+        username = config.get('user', {}).get('username', 'Default User')
+        email = config.get('user', {}).get('email', 'user@example.com')
+
+        logger.info(f"User: {username}, Email: {email}")
+
+        user = get_or_create(
+            session,
+            User,
+            username=username,
+            email=email
+        )
+
+        # Create model name entry
+        model_name_id = get_model_name_id(model_name, model_path, session)
+
+        logger.info(f"Model name: {model_name}")
+        logger.info(f"Model ID: {model_name_id}")
+
+        # Create chemical database entry
+        chem_database = config['pdr'].get(
+            'chem_database',
+            PDR_CONFIG['chem_database']
+        )
+        chem_origin = config['pdr'].get(
+            'chem_origin',
+            PDR_CONFIG['chem_origin']
+        )
+
+        chem = get_or_create(
+            session,
+            ChemicalDatabase,
+            chem_rates_file_name=chem_database,
+            chem_rates_full_path=os.path.join(pdr_dir, 'pdrinpdata', chem_database),
+            database_origin=chem_origin
+        )
+
+        logger.info(f"Chemical database: {chem_database}")
+        logger.info(f"Chemical database ID: {chem.id}")
+
+        # Create parameter and job entries
+        parameter_ids = []
+        job_ids = []
+
+        # Fix here: Extract single values for alpha and rcore
+        alpha_param = config['parameters'].get('alpha', DEFAULT_PARAMETERS['alpha'])
+        rcore_param = config['parameters'].get('rcore', DEFAULT_PARAMETERS['rcore'])
+
+        # Convert to numeric if list
+        alpha = alpha_param[0] if isinstance(alpha_param, list) else alpha_param
+        rcore = rcore_param[0] if isinstance(rcore_param, list) else rcore_param
+
+        logger.debug(f"Using alpha={alpha} (from {alpha_param}) and rcore={rcore} (from {rcore_param})")
+
+        species = config['parameters'].get('species', DEFAULT_PARAMETERS['species'])
+        chemistry = config['parameters'].get('chemistry', DEFAULT_PARAMETERS.get('chemistry', ['umist']))
+
+        for p in param_combinations:
+            logger.info(f"Creating entry for parameters: {p}")
+
+            # Calculate radius
+            rtot = compute_radius(
+                from_string_to_par(p[2]),  # mass
+                from_string_to_par(p[1]),  # density
+                alpha,
+                rcore
+            )
+
+            # Create parameter entry
+            param_dict = {
+                'zmetal': eval(p[0]) * 0.01,
+                'xnsur': from_string_to_par(p[1]),
+                'alpha': alpha,
+                'rcore': rcore,
+                'rtot': rtot,
+                'mass': from_string_to_par(p[2]),
+                'sint': from_string_to_par(p[3]),
+                'model_name_id': model_name_id,
+                'species': list_to_string(chemistry) if isinstance(chemistry, list) else chemistry
+            }
+
+            # Add non-default parameters
+            non_default_params = config.get('non_default_parameters', {})
+            param_dict.update(non_default_params)
+
+            # Ensure all list parameters are properly converted to strings
+            for key, value in param_dict.items():
+                if isinstance(value, list):
+                    param_dict[key] = list_to_string(value)
+
+            param = get_or_create(session, KOSMAtauParameters, **param_dict)
+            parameter_ids.append(param.id)
+
+            # Create job entry
+            model = f"{p[0]}_{p[1]}_{p[2]}_{p[3]}_00"
+
+            job = get_or_create(
+                session,
+                PDRModelJob,
+                model_name_id=model_name_id,
+                model_job_name=model,
+                user_id=user.id,
+                kosmatau_parameters_id=param.id,
+                kosmatau_executable_id=exe.id,
+                output_directory=model_path,
+                output_hdf4_file=f'pdr{model}.hdf',
+                pending=True,
+                onion_species=list_to_string(species),
+                chemical_database_id=chem.id
+            )
+
+            job_ids.append(job.id)
+
+        logger.info(f"Created {len(parameter_ids)} parameter sets")
+        logger.info(f"Created {len(job_ids)} job entries")
+
+        return parameter_ids, job_ids
+
+    finally:
+        # CRITICAL FIX: Always close the session to prevent connection leaks
+        session.close()
+        logger.debug("Database session closed in create_database_entries")
 
 
 def run_instance(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False):
@@ -350,94 +360,99 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None, kee
         logger.debug(f"Using database config from provided config in worker: {db_config}")
     
     db_manager = get_db_manager(db_config)  # Pass config to worker
+    db_manager.log_diagnostics(f"worker-{os.getpid()}:init")
     
-    # Ensure tables exist in this worker process
     try:
-        db_manager.create_tables()
-    except Exception as e:
-        logger.warning(f"Job {job_id}: Could not ensure database tables exist: {e}")
-    
-    session = db_manager.get_session()
-    job = session.get(PDRModelJob, job_id)
-    
-    if not job:
-        logger.error(f"Job with ID {job_id} not found in database")
-        return []
-    
-    if config is None:
-        logger.debug(f"No config provided for job {job_id}, using defaults")
-        config = {'pdr': PDR_CONFIG}
-    
-    pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
-    logger.debug(f"PDR base directory: {pdr_dir}")
-    
-    if not os.path.exists(pdr_dir):
-        logger.error(f"PDR directory does not exist: {pdr_dir}")
-        return [f"Error: PDR directory {pdr_dir} does not exist"]
-    
-    # Save current directory
-    current_dir = os.getcwd()
-    logger.debug(f"Current working directory: {current_dir}")
-    
-    
-    def _execute_in_tmp_dir(tmp_dir_path_local):
-        original_cwd_for_execute = os.getcwd() 
+        # Ensure tables exist in this worker process
         try:
-            _setup_execution_environment(tmp_dir_path_local, pdr_dir, config, json_template)
-            os.chdir(tmp_dir_path_local)
-            logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
-            
-            run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config)
-            
-            return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
-        except Exception as exec_err:
-            logger.error(f"Job {job_id}: Error during execution in {tmp_dir_path_local}: {exec_err}", exc_info=True)
-            err_session_exec = get_db_manager().get_session()
-            try:
-                update_job_status(job_id, "exception_runtime", err_session_exec) 
-            finally:
-                err_session_exec.close()
-            raise 
-        finally:
-            os.chdir(original_cwd_for_execute)
-            logger.info(f"Job {job_id}: Restored working directory from temp to: {original_cwd_for_execute}")
+            db_manager.create_tables()
+        except Exception as e:
+            logger.warning(f"Job {job_id}: Could not ensure database tables exist: {e}")
+        session = db_manager.get_session()
 
-    output_lines_result = []
-    try:
-        os.chdir(pdr_dir)
-        logger.debug(f"Job {job_id}: Changed working directory to PDR base: {pdr_dir}")
+        try:
+            job = session.get(PDRModelJob, job_id)
 
-        if keep_tmp:
-            persistent_tmp_dir = tempfile.mkdtemp(prefix=f'pdr-job{job_id}-')
-            logger.warning(f"Job {job_id}: Temporary directory {persistent_tmp_dir} will be kept due to --keep-tmp flag.")
-            logger.warning(f"Job {job_id}: Please ensure you manually clean up this directory after debugging: {persistent_tmp_dir}")
-            try:
-                output_lines_result = _execute_in_tmp_dir(persistent_tmp_dir)
-            except Exception as e_persistent:
-                output_lines_result.extend([f"Error in persistent temp dir: {str(e_persistent)}", traceback.format_exc()])
-        else:
-            with tempfile.TemporaryDirectory(prefix=f'pdr-job{job_id}-') as tmp_dir_context:
-                logger.info(f"Job {job_id}: Created temporary directory: {tmp_dir_context}")
+            if not job:
+                logger.error(f"Job with ID {job_id} not found in database")
+                db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_job")
+                return []
+
+            if config is None:
+                logger.debug(f"No config provided for job {job_id}, using defaults")
+                config = {'pdr': PDR_CONFIG}
+
+            pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
+            logger.debug(f"PDR base directory: {pdr_dir}")
+
+            if not os.path.exists(pdr_dir):
+                logger.error(f"PDR directory does not exist: {pdr_dir}")
+                db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_pdr_dir")
+                return [f"Error: PDR directory {pdr_dir} does not exist"]
+
+            # Save current directory
+            current_dir = os.getcwd()
+            logger.debug(f"Current working directory: {current_dir}")
+
+            def _execute_in_tmp_dir(tmp_dir_path_local):
+                original_cwd_for_execute = os.getcwd()
                 try:
-                    output_lines_result = _execute_in_tmp_dir(tmp_dir_context)
-                except Exception as e_context:
-                    output_lines_result.extend([f"Error in temp dir: {str(e_context)}", traceback.format_exc()])
-        
-    except Exception as e_outer:
-        logger.error(f"Job {job_id}: Outer error during setup or execution: {str(e_outer)}", exc_info=True)
-        err_session_outer = get_db_manager().get_session()
-        try:
-            update_job_status(job_id, "exception_setup_outer", err_session_outer)
-        finally:
-            err_session_outer.close()
-        output_lines_result.extend([f"Outer Error: {str(e_outer)}", traceback.format_exc()])
-    finally:
-        os.chdir(current_dir)
-        logger.debug(f"Job {job_id}: Restored original working directory: {current_dir}")
+                    _setup_execution_environment(tmp_dir_path_local, pdr_dir, config, json_template)
+                    os.chdir(tmp_dir_path_local)
+                    logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
 
-    end_time_instance = time.time()
-    logger.info(f"Job {job_id} finished processing in {end_time_instance - start_time_instance:.2f} seconds.")
-    return output_lines_result
+                    run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config)
+
+                    return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
+                except Exception as exec_err:
+                    logger.error(f"Job {job_id}: Error during execution in {tmp_dir_path_local}: {exec_err}", exc_info=True)
+                    # Use session_scope for automatic cleanup instead of manual session management
+                    update_job_status(job_id, "exception_runtime")
+                    raise
+                finally:
+                    os.chdir(original_cwd_for_execute)
+                    logger.info(f"Job {job_id}: Restored working directory from temp to: {original_cwd_for_execute}")
+
+            output_lines_result = []
+            try:
+                os.chdir(pdr_dir)
+                logger.debug(f"Job {job_id}: Changed working directory to PDR base: {pdr_dir}")
+
+                if keep_tmp:
+                    persistent_tmp_dir = tempfile.mkdtemp(prefix=f'pdr-job{job_id}-')
+                    logger.warning(f"Job {job_id}: Temporary directory {persistent_tmp_dir} will be kept due to --keep-tmp flag.")
+                    logger.warning(f"Job {job_id}: Please ensure you manually clean up this directory after debugging: {persistent_tmp_dir}")
+                    try:
+                        output_lines_result = _execute_in_tmp_dir(persistent_tmp_dir)
+                    except Exception as e_persistent:
+                        output_lines_result.extend([f"Error in persistent temp dir: {str(e_persistent)}", traceback.format_exc()])
+                else:
+                    with tempfile.TemporaryDirectory(prefix=f'pdr-job{job_id}-') as tmp_dir_context:
+                        logger.info(f"Job {job_id}: Created temporary directory: {tmp_dir_context}")
+                        try:
+                            output_lines_result = _execute_in_tmp_dir(tmp_dir_context)
+                        except Exception as e_context:
+                            output_lines_result.extend([f"Error in temp dir: {str(e_context)}", traceback.format_exc()])
+
+            except Exception as e_outer:
+                logger.error(f"Job {job_id}: Outer error during setup or execution: {str(e_outer)}", exc_info=True)
+                # Use session_scope for automatic cleanup instead of manual session management
+                update_job_status(job_id, "exception_setup_outer")
+                output_lines_result.extend([f"Outer Error: {str(e_outer)}", traceback.format_exc()])
+            finally:
+                os.chdir(current_dir)
+                logger.debug(f"Job {job_id}: Restored original working directory: {current_dir}")
+
+            end_time_instance = time.time()
+            logger.info(f"Job {job_id} finished processing in {end_time_instance - start_time_instance:.2f} seconds.")
+            return output_lines_result
+
+        finally:
+            # CRITICAL FIX: Always close the session to prevent connection leaks
+            session.close()
+            logger.debug(f"Database session closed for job {job_id} in run_instance")
+    finally:
+        db_manager.log_diagnostics(f"worker-{os.getpid()}:exit")
 
 def _setup_execution_environment(tmp_dir, pdr_dir, config, json_template=None):
     """Set up the execution environment for PDR model runs.
@@ -561,26 +576,9 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
     except Exception as e:
         logger.error(f"Critical error in run_instance_wrapper for job {job_id}: {str(e)}", exc_info=True)
         
-        # FIX: Pass database config to worker processes
+        # Use session_scope for automatic cleanup - simplified error handling
         try:
-            # Extract database config if available (same as in create_database_entries)
-            db_config = None
-            if config and 'database' in config:
-                db_config = config['database']
-                logger.debug(f"Using database config from provided config in worker: {db_config}")
-            
-            db_manager = get_db_manager(db_config)  # Pass the config to worker
-            
-            # Ensure tables are created in this worker process  
-            db_manager.create_tables()
-            
-            session = db_manager.get_session()
-            job = session.get(PDRModelJob, job_id)
-            if job:
-                job.pending = False
-                job.status = "exception"
-                session.commit()
-                session.close()
+            update_job_status(job_id, "exception")
         except Exception as db_error:
             logger.error(f"Failed to update job status for job {job_id} after exception: {db_error}")
 
@@ -658,8 +656,21 @@ def _build_default_config(params=None):
     
     return config
 
-def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None, keep_tmp=False):
+def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None, keep_tmp=False, diagnostics_output_path=None):
     """Run a grid of PDR models with different parameters."""
+    """Run a grid of PDR models with different parameters.
+    
+    Args:
+        params (dict, optional): Parameter configuration.
+        model_name (str, optional): Model name identifier.
+        config (dict, optional): Framework configuration.
+        parallel (bool, optional): Enable parallel execution.
+        n_workers (int, optional): Explicit worker count.
+        force_onion (bool, optional): Force onion step.
+        json_template (str, optional): JSON template path.
+        keep_tmp (bool, optional): Preserve temporary directories.
+        diagnostics_output_path (str, optional): Write final database diagnostics snapshot here.
+    """
     start_time = time.time()
     logger.info(f"Starting parameter grid execution for model '{model_name}'")
     logger.info(f"Parallel execution: {'enabled' if parallel else 'disabled'}")
@@ -762,6 +773,19 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
             run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
     end_time = time.time()
     logger.info(f"Parameter grid execution for model '{model_name}' completed in {end_time - start_time:.2f} seconds.")
+    
+    diagnostics_enabled = bool(config.get('database', {}).get('diagnostics_enabled')) if config else False
+    final_output_target = diagnostics_output_path or (config.get('diagnostics_output_path') if config else None)
+    if diagnostics_enabled:
+        db_manager = get_db_manager()
+        db_manager.log_diagnostics("main:run_parameter_grid:complete")
+        snapshot = db_manager.get_diagnostics_snapshot(include_events=False)
+        logger.info("Database diagnostics snapshot after parameter grid:\n%s", json.dumps(snapshot, indent=2))
+        if final_output_target:
+            output_path = Path(final_output_target)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(snapshot, indent=2))
+    
     return job_ids
 
 # Remove this problematic line that tries to attach the function as an attribute

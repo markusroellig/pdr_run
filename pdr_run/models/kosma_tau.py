@@ -840,7 +840,7 @@ def copy_onionoutput(spec, job_id, config=None):
 
 def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     """Run the KOSMA-tau model workflow for a job.
-    
+
     Args:
         job_id (int): Job ID
         tmp_dir (str): Temporary directory path
@@ -848,134 +848,140 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
         config (dict): Configuration dictionary
     """
     logger.info(f"Running KOSMA-tau model for job {job_id}")
-    
+
     # Import storage backend here to avoid circular imports
     from pdr_run.storage.base import get_storage_backend
-    
+
     session = get_session()
-    job = session.get(PDRModelJob, job_id)
-    
-    if not job:
-        raise ValueError(f"Job with ID {job_id} not found")
-    
-    model = job.model_job_name
-    zmetal, density, cmass, radiation, shieldh2 = retrieve_job_parameters(job_id, session)
-    
-    logger.info(f"MODEL is {model}")
-    hdf5_out_name = 'pdrstruct' + model + '.hdf5' # check if HDF5 file already exists 
-    
-    # Get storage backend to check for existing files
-    storage = get_storage_backend(config)
-    
-    # Primary workflow: Create JSON config (always)
-    create_json_from_job_id(job_id, session)
-    
-    # Legacy support: Create PDRNEW.INP only if template exists
     try:
-        create_pdrnew_from_job_id(job_id, session)
-        logger.info("Created PDRNEW.INP for legacy compatibility")
-    except FileNotFoundError:
-        logger.info("PDRNEW.INP.template not found - using JSON-only workflow")
-    
-    # Flag to track if PDR execution was skipped
-    pdr_skipped = False
-    
-    # Check if model already exists using storage backend
-    hdf_storage_path = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
-    
-    # Use storage backend to check file existence
-    try:
-        if hasattr(storage, 'file_exists'):
-            # If storage backend has a file_exists method, use it
-            model_exists = storage.file_exists(hdf_storage_path)
-        else:
-            # Fallback: try to get file info (this will raise an exception if file doesn't exist)
-            try:
-                # This is a simple check - try to list the directory and see if our file is there
-                parent_dir = os.path.dirname(hdf_storage_path)
-                files = storage.list_files(parent_dir)
-                model_exists = os.path.basename(hdf_storage_path) in files
-            except:
-                # If we can't list files or any other error, assume file doesn't exist
-                model_exists = False
-                
-        logger.debug(f"Checking for existing model at: {hdf_storage_path}")
-        logger.debug(f"Model exists: {model_exists}")
-        
-    except Exception as e:
-        logger.warning(f"Could not check for existing model: {e}")
-        model_exists = False
-    
-    if model_exists:
-        logger.warning(f"Model {model} exists remotely, skipping PDR execution")
-        
-        # Update database entries
-        update_db_pdr_output_entries(job_id, session)
-
         job = session.get(PDRModelJob, job_id)
-        
-        # Download CTRL_IND file for onion processing if it exists
-        ctrl_ind_remote_path = os.path.join(job.model_name.model_path, 'pdrgrid', f'CTRL_IND{model}')
-        ctrl_ind_downloaded = False
-        try:
-            logger.info(f"Attempting to download CTRL_IND file from remote storage at: {ctrl_ind_remote_path}")
-            
-            # Check if the source file exists before attempting to retrieve
-            if os.path.exists(ctrl_ind_remote_path):
-                # Create absolute path for destination to avoid path resolution issues
-                ctrl_ind_dest = os.path.abspath('CTRL_IND')
-                logger.info(f"Source file exists, downloading to: {ctrl_ind_dest}")
-                
-                storage.retrieve_file(ctrl_ind_remote_path, ctrl_ind_dest)
-                logger.info(f"Downloaded CTRL_IND file from remote storage")
-                ctrl_ind_downloaded = True
-            else:
-                logger.warning(f"CTRL_IND file does not exist at: {ctrl_ind_remote_path}")
-                
-        except Exception as e:
-            logger.warning(f"Could not download CTRL_IND file: {e}")
-            logger.debug(f"Error details: {type(e).__name__}: {str(e)}")
-            
-        # If download failed, check if we have it in pdroutput directory (fallback)
-        if not ctrl_ind_downloaded and os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
-            try:
-                import shutil
-                shutil.copy2(os.path.join('pdroutput', 'CTRL_IND'), 'CTRL_IND')
-                logger.info(f"Copied CTRL_IND from pdroutput directory as fallback")
-                ctrl_ind_downloaded = True
-            except Exception as e:
-                logger.warning(f"Could not copy CTRL_IND from pdroutput: {e}")
-    
-        update_job_status(job_id, 'skipped', session)
-        pdr_skipped = True
-    else:
-        logger.info(f"Model doesn't exist, executing PDR code")
-        
-        # Run PDR model
-        run_pdr(job_id, tmp_dir)
-    
-    # Run onion for each species if PDR was not skipped or force_onion is True
-    if not pdr_skipped or force_onion:
-        species = string_to_list(job.onion_species)
-        for spec in species:
-            logger.info(f"Processing species: {spec}")
-            
-            # Set up onion directory
-            set_oniondir(spec)
-            
-            # Run onion model
-            run_onion(spec, job_id, tmp_dir, config=config)
-            # Copy output files
-            copy_onionoutput(spec, job_id, config=config)
-    else:
-        logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
-    
-    # Copy output files - moved after the onion run because ONION modifies the HDF5 file
-    # Only copy if we actually ran the PDR model
-    if not pdr_skipped:
-        copy_pdroutput(job_id, config=config)
 
-    logger.info(f"Completed KOSMA-tau model run for job {job_id}")
+        if not job:
+            raise ValueError(f"Job with ID {job_id} not found")
+    
+        model = job.model_job_name
+        zmetal, density, cmass, radiation, shieldh2 = retrieve_job_parameters(job_id, session)
+        
+        logger.info(f"MODEL is {model}")
+        hdf5_out_name = 'pdrstruct' + model + '.hdf5' # check if HDF5 file already exists 
+        
+        # Get storage backend to check for existing files
+        storage = get_storage_backend(config)
+        
+        # Primary workflow: Create JSON config (always)
+        create_json_from_job_id(job_id, session)
+        
+        # Legacy support: Create PDRNEW.INP only if template exists
+        try:
+            create_pdrnew_from_job_id(job_id, session)
+            logger.info("Created PDRNEW.INP for legacy compatibility")
+        except FileNotFoundError:
+            logger.info("PDRNEW.INP.template not found - using JSON-only workflow")
+        
+        # Flag to track if PDR execution was skipped
+        pdr_skipped = False
+        
+        # Check if model already exists using storage backend
+        hdf_storage_path = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
+        
+        # Use storage backend to check file existence
+        try:
+            if hasattr(storage, 'file_exists'):
+                # If storage backend has a file_exists method, use it
+                model_exists = storage.file_exists(hdf_storage_path)
+            else:
+                # Fallback: try to get file info (this will raise an exception if file doesn't exist)
+                try:
+                    # This is a simple check - try to list the directory and see if our file is there
+                    parent_dir = os.path.dirname(hdf_storage_path)
+                    files = storage.list_files(parent_dir)
+                    model_exists = os.path.basename(hdf_storage_path) in files
+                except:
+                    # If we can't list files or any other error, assume file doesn't exist
+                    model_exists = False
+                    
+            logger.debug(f"Checking for existing model at: {hdf_storage_path}")
+            logger.debug(f"Model exists: {model_exists}")
+            
+        except Exception as e:
+            logger.warning(f"Could not check for existing model: {e}")
+            model_exists = False
+        
+        if model_exists:
+            logger.warning(f"Model {model} exists remotely, skipping PDR execution")
+            
+            # Update database entries
+            update_db_pdr_output_entries(job_id, session)
+    
+            job = session.get(PDRModelJob, job_id)
+            
+            # Download CTRL_IND file for onion processing if it exists
+            ctrl_ind_remote_path = os.path.join(job.model_name.model_path, 'pdrgrid', f'CTRL_IND{model}')
+            ctrl_ind_downloaded = False
+            try:
+                logger.info(f"Attempting to download CTRL_IND file from remote storage at: {ctrl_ind_remote_path}")
+                
+                # Check if the source file exists before attempting to retrieve
+                if os.path.exists(ctrl_ind_remote_path):
+                    # Create absolute path for destination to avoid path resolution issues
+                    ctrl_ind_dest = os.path.abspath('CTRL_IND')
+                    logger.info(f"Source file exists, downloading to: {ctrl_ind_dest}")
+                    
+                    storage.retrieve_file(ctrl_ind_remote_path, ctrl_ind_dest)
+                    logger.info(f"Downloaded CTRL_IND file from remote storage")
+                    ctrl_ind_downloaded = True
+                else:
+                    logger.warning(f"CTRL_IND file does not exist at: {ctrl_ind_remote_path}")
+                    
+            except Exception as e:
+                logger.warning(f"Could not download CTRL_IND file: {e}")
+                logger.debug(f"Error details: {type(e).__name__}: {str(e)}")
+                
+            # If download failed, check if we have it in pdroutput directory (fallback)
+            if not ctrl_ind_downloaded and os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
+                try:
+                    import shutil
+                    shutil.copy2(os.path.join('pdroutput', 'CTRL_IND'), 'CTRL_IND')
+                    logger.info(f"Copied CTRL_IND from pdroutput directory as fallback")
+                    ctrl_ind_downloaded = True
+                except Exception as e:
+                    logger.warning(f"Could not copy CTRL_IND from pdroutput: {e}")
+        
+            update_job_status(job_id, 'skipped', session)
+            pdr_skipped = True
+        else:
+            logger.info(f"Model doesn't exist, executing PDR code")
+            
+            # Run PDR model
+            run_pdr(job_id, tmp_dir)
+        
+        # Run onion for each species if PDR was not skipped or force_onion is True
+        if not pdr_skipped or force_onion:
+            species = string_to_list(job.onion_species)
+            for spec in species:
+                logger.info(f"Processing species: {spec}")
+                
+                # Set up onion directory
+                set_oniondir(spec)
+                
+                # Run onion model
+                run_onion(spec, job_id, tmp_dir, config=config)
+                # Copy output files
+                copy_onionoutput(spec, job_id, config=config)
+        else:
+            logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
+        
+        # Copy output files - moved after the onion run because ONION modifies the HDF5 file
+        # Only copy if we actually ran the PDR model
+        if not pdr_skipped:
+            copy_pdroutput(job_id, config=config)
+    
+        logger.info(f"Completed KOSMA-tau model run for job {job_id}")
+
+    finally:
+        # CRITICAL FIX: Always close the session to prevent connection leaks
+        session.close()
+        logger.debug(f"Database session closed for job {job_id} in run_kosma_tau")
 
 def update_db_pdr_output_entries(job_id, session):
     """Update database entries for PDR output files when skipping execution.
