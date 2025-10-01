@@ -543,83 +543,111 @@ def copy_pdroutput(job_id, config=None):
     json_file_name = 'pdr_config' + model + '.json'
     ctrl_ind_file_name = 'CTRL_IND' + model
     
-    # Copy output files to the model directory
-    if os.path.exists(os.path.join('pdroutput', 'TEXTOUT')):
-         # Local source path
-        local_source = os.path.join('pdroutput', 'TEXTOUT')
-        
-        # Remote destination path (relative to storage base_dir)
-        remote_dest = os.path.join(model_path, 'pdrgrid', text_out_name)
-        
-        # Store file using backend (works with local, SFTP, S3, etc.)
-        storage.store_file(local_source, remote_dest)
-        
-        # Update job with storage-aware path
-        job.log_file = remote_dest  # Now this path works with any backend
-        job.output_textout_file = remote_dest
+    # Copy output files to the model directory with error handling
+    try:
+        if os.path.exists(os.path.join('pdroutput', 'TEXTOUT')):
+             # Local source path
+            local_source = os.path.join('pdroutput', 'TEXTOUT')
 
-    
-    if os.path.exists(os.path.join('pdroutput', 'pdrout.hdf')):
-        local_source = os.path.join('pdroutput', 'pdrout.hdf')
-        remote_dest  = os.path.join(model_path, 'pdrgrid', hdf_out_name)
-        storage.store_file(local_source, remote_dest)
-        job.output_hdf4_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
-    
-    if os.path.exists(os.path.join('pdroutput', 'pdrstruct_s.hdf5')):
-        local_source = os.path.join('pdroutput', 'pdrstruct_s.hdf5')
-        remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
-        storage.store_file(local_source, remote_dest)
-        job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+            # Remote destination path (relative to storage base_dir)
+            remote_dest = os.path.join(model_path, 'pdrgrid', text_out_name)
 
-    if os.path.exists(os.path.join('pdroutput', 'pdrchem_c.hdf5')):
-        local_source = os.path.join('pdroutput', 'pdrchem_c.hdf5')
-        remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
-        storage.store_file(local_source, remote_dest)
-        job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+            # Store file using backend (works with local, SFTP, S3, etc.)
+            storage.store_file(local_source, remote_dest)
 
-    if os.path.exists(os.path.join('pdroutput', 'chemchk.out')):
-        local_source = os.path.join('pdroutput', 'chemchk.out')
-        remote_dest = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-        storage.store_file(local_source, remote_dest)
-        job.output_chemchk_file = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-    
-    if os.path.exists('./Out'):
-        # Create tar file locally first
-        local_tar = os.path.join('/tmp', mrt_out_name)
-        make_tarfile(local_tar, './Out')
-        
-        # Then upload to storage
-        remote_dest = os.path.join(model_path, 'pdrgrid', mrt_out_name)
-        storage.store_file(local_tar, remote_dest)
-        
-        # Clean up local tar file
-        os.unlink(local_tar)
-        job.output_mcdrt_zip_file = os.path.join(model_path, 'pdrgrid', mrt_out_name)
-    
-    if os.path.exists('PDRNEW.INP'):
-        local_source = os.path.join('PDRNEW.INP')
-        remote_dest = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-        storage.store_file(local_source, remote_dest)
+            # Update job with storage-aware path
+            job.log_file = remote_dest  # Now this path works with any backend
+            job.output_textout_file = remote_dest
+            logger.info(f"Successfully stored TEXTOUT file for job {job_id}")
 
-        job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-    
-    if os.path.exists('pdr_config.json'):
-        local_source = 'pdr_config.json'
-        remote_dest = os.path.join(model_path, 'pdrgrid', json_file_name)
-        storage.store_file(local_source, remote_dest)
-        job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
 
-    if os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
-        local_source = os.path.join('pdroutput', 'CTRL_IND')
-        remote_dest = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
-        storage.store_file(local_source, remote_dest)
-        # copy for CTRL_IND onionexe
-        shutil.copyfile(
-            os.path.join('pdroutput', 'CTRL_IND'),
-            'CTRL_IND'
-        )
-       
-    session.commit()
+        if os.path.exists(os.path.join('pdroutput', 'pdrout.hdf')):
+            local_source = os.path.join('pdroutput', 'pdrout.hdf')
+            remote_dest  = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+            storage.store_file(local_source, remote_dest)
+            job.output_hdf4_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+            logger.info(f"Successfully stored HDF4 file for job {job_id}")
+
+        if os.path.exists(os.path.join('pdroutput', 'pdrstruct_s.hdf5')):
+            local_source = os.path.join('pdroutput', 'pdrstruct_s.hdf5')
+            remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+            storage.store_file(local_source, remote_dest)
+            job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+            logger.info(f"Successfully stored HDF5 struct file for job {job_id}")
+
+        if os.path.exists(os.path.join('pdroutput', 'pdrchem_c.hdf5')):
+            local_source = os.path.join('pdroutput', 'pdrchem_c.hdf5')
+            remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+            storage.store_file(local_source, remote_dest)
+            job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+            logger.info(f"Successfully stored HDF5 chem file for job {job_id}")
+
+        if os.path.exists(os.path.join('pdroutput', 'chemchk.out')):
+            local_source = os.path.join('pdroutput', 'chemchk.out')
+            remote_dest = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
+            storage.store_file(local_source, remote_dest)
+            job.output_chemchk_file = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
+            logger.info(f"Successfully stored chemchk file for job {job_id}")
+
+        if os.path.exists('./Out'):
+            # Create tar file locally first
+            local_tar = os.path.join('/tmp', mrt_out_name)
+            make_tarfile(local_tar, './Out')
+
+            # Then upload to storage
+            remote_dest = os.path.join(model_path, 'pdrgrid', mrt_out_name)
+            storage.store_file(local_tar, remote_dest)
+
+            # Clean up local tar file
+            os.unlink(local_tar)
+            job.output_mcdrt_zip_file = os.path.join(model_path, 'pdrgrid', mrt_out_name)
+            logger.info(f"Successfully stored MCDRT output for job {job_id}")
+
+        if os.path.exists('PDRNEW.INP'):
+            local_source = os.path.join('PDRNEW.INP')
+            remote_dest = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
+            storage.store_file(local_source, remote_dest)
+            job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
+            logger.info(f"Successfully stored PDRNEW.INP for job {job_id}")
+
+        if os.path.exists('pdr_config.json'):
+            local_source = 'pdr_config.json'
+            remote_dest = os.path.join(model_path, 'pdrgrid', json_file_name)
+            storage.store_file(local_source, remote_dest)
+            job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
+            logger.info(f"Successfully stored pdr_config.json for job {job_id}")
+
+        if os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
+            local_source = os.path.join('pdroutput', 'CTRL_IND')
+            remote_dest = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
+            storage.store_file(local_source, remote_dest)
+            # copy for CTRL_IND onionexe
+            shutil.copyfile(
+                os.path.join('pdroutput', 'CTRL_IND'),
+                'CTRL_IND'
+            )
+            logger.info(f"Successfully stored CTRL_IND for job {job_id}")
+
+        # Commit all file storage updates to database
+        try:
+            session.commit()
+            logger.info(f"Successfully committed storage updates for job {job_id}")
+        except Exception as e:
+            logger.error(f"Failed to commit storage updates for job {job_id}: {e}")
+            session.rollback()
+            raise
+
+    except Exception as e:
+        logger.error(f"Storage operation failed for job {job_id}: {e}")
+        # Update job status to indicate storage failure
+        try:
+            job.status = 'failed_storage'
+            session.commit()
+            logger.info(f"Updated job {job_id} status to 'failed_storage'")
+        except Exception as commit_error:
+            logger.error(f"Failed to update job status after storage error: {commit_error}")
+            session.rollback()
+        raise
     
 
     # Calculate SHA256 for local files (before they get cleaned up)
@@ -825,18 +853,23 @@ def copy_onionoutput(spec, job_id, config=None):
         'ONION3_' + spec + '.OUT'
     ]
     
-    for f in onion_files:
-        path = os.path.join('onionoutput', f)
-        if os.path.exists(path):
-            remote_dest = os.path.join(model_path, 'oniongrid', 'ONION' + model + '.' + f)
-            storage.store_file(path, remote_dest)
-    
-    storage.store_file(
-        os.path.join('onionoutput', 'TEXTOUT'),
-        os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec)
-    )
-    
-    logger.info(f"Copied onion output for species {spec}")
+    try:
+        for f in onion_files:
+            path = os.path.join('onionoutput', f)
+            if os.path.exists(path):
+                remote_dest = os.path.join(model_path, 'oniongrid', 'ONION' + model + '.' + f)
+                storage.store_file(path, remote_dest)
+                logger.debug(f"Stored onion file {f} for job {job_id}")
+
+        storage.store_file(
+            os.path.join('onionoutput', 'TEXTOUT'),
+            os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec)
+        )
+        logger.info(f"Successfully copied onion output for species {spec}")
+
+    except Exception as e:
+        logger.error(f"Failed to store onion output files for species {spec}, job {job_id}: {e}")
+        raise
 
 def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
     """Run the KOSMA-tau model workflow for a job.
