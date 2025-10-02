@@ -391,62 +391,34 @@ class RCloneStorage(Storage):
             return f"{self.remote_name}:{clean_remote_path}"
     
     def store_file(self, local_path, remote_path):
-        """Store a file to remote storage using rclone with exact filename control."""
+        """Store a file to remote storage using rclone with exact filename control.
+
+        Uses rclone copyto for atomic file-to-file transfer, which avoids race
+        conditions in parallel execution (fixes GitHub issue #10).
+        """
         try:
             full_remote_path = self._get_full_remote_path(remote_path)
-            
-            # Get the target directory and filename
+
+            # Get the target directory
             remote_dir = os.path.dirname(full_remote_path.split(':', 1)[1])
-            target_filename = os.path.basename(remote_path)
-            source_filename = os.path.basename(local_path)
-            
+
             # Ensure remote directory exists
             if remote_dir:
                 mkdir_cmd = ['rclone', 'mkdir', f"{self.remote_name}:{remote_dir}"]
                 subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            # If target filename differs from source, we need to handle rename
-            if target_filename != source_filename:
-                # Strategy: Copy to temp location, then move to final name
-                temp_remote_dir = f"{self.remote_name}:{remote_dir}" if remote_dir else f"{self.remote_name}:"
-                
-                # First copy the file to the directory
-                cmd = ['rclone', 'copy', local_path, temp_remote_dir]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    self.logger.error(f"RClone copy failed: {result.stderr}")
-                    return False
-                
-                # Now move from source filename to target filename
-                old_path = f"{self.remote_name}:{os.path.join(remote_dir, source_filename) if remote_dir else source_filename}"
-                new_path = full_remote_path
-                
-                move_cmd = ['rclone', 'moveto', old_path, new_path]
-                result = subprocess.run(move_cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    self.logger.error(f"RClone rename failed: {result.stderr}")
-                    # Try to clean up the original file
-                    try:
-                        subprocess.run(['rclone', 'delete', old_path], 
-                                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    except:
-                        pass
-                    return False
-            else:
-                # Filenames match, simple copy to directory
-                target_remote_dir = f"{self.remote_name}:{remote_dir}" if remote_dir else f"{self.remote_name}:"
-                cmd = ['rclone', 'copy', local_path, target_remote_dir]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    self.logger.error(f"RClone copy failed: {result.stderr}")
-                    return False
-            
+
+            # Use copyto for atomic file-to-file transfer
+            # This is safer for parallel execution than copy+moveto
+            cmd = ['rclone', 'copyto', local_path, full_remote_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                self.logger.error(f"RClone copyto failed: {result.stderr}")
+                return False
+
             self.logger.info(f"Stored {local_path} as {full_remote_path}")
             return True
-            
+
         except subprocess.SubprocessError as e:
             self.logger.error(f"Failed to upload file with rclone: {e}")
             return False
