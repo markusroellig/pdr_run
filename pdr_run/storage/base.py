@@ -79,13 +79,15 @@ def get_storage_backend(config=None):
             rclone_config = {
                 'base_dir': config['storage'].get('base_dir', '/tmp'),
                 'rclone_remote': config['storage'].get('rclone_remote', 'default'),
-                'use_mount': config['storage'].get('use_mount', False)
+                'use_mount': config['storage'].get('use_mount', False),
+                'remote_path_prefix': config['storage'].get('remote_path_prefix', None)
             }
         else:
             rclone_config = {
                 'base_dir': os.environ.get("PDR_STORAGE_DIR", "/tmp"),
                 'rclone_remote': os.environ.get("PDR_STORAGE_RCLONE_REMOTE", "default"),
-                'use_mount': os.environ.get("PDR_STORAGE_USE_MOUNT", "false").lower() == "true"
+                'use_mount': os.environ.get("PDR_STORAGE_USE_MOUNT", "false").lower() == "true",
+                'remote_path_prefix': os.environ.get("PDR_STORAGE_REMOTE_PATH_PREFIX", None)
             }
         logger.debug(f"RClone config: {rclone_config}")
         return RCloneStorage(rclone_config)

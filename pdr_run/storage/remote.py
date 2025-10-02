@@ -369,19 +369,26 @@ class RCloneStorage(Storage):
     
     def _get_full_remote_path(self, remote_path):
         """Construct full remote path combining base path and relative path."""
-        
+
         # If a prefix is defined, remove it from the remote path
         if self.remote_path_prefix and remote_path.startswith(self.remote_path_prefix):
             remote_path = remote_path[len(self.remote_path_prefix):]
             # Remove leading slash if any to make it a relative path
             remote_path = remote_path.lstrip('/')
 
+        # Remove leading slash from remote_path if present to avoid double slashes
+        # when joining with base path
+        clean_remote_path = remote_path.lstrip('/')
+
         if self.remote_base_path:
             # Join base path with remote path
-            full_path = os.path.join(self.remote_base_path, remote_path).replace('\\', '/')
+            full_path = os.path.join(self.remote_base_path, clean_remote_path).replace('\\', '/')
             return f"{self.remote_name}:{full_path}"
         else:
-            return f"{self.remote_name}:{remote_path}"
+            # No base path - ensure path starts with / for consistency
+            if not clean_remote_path.startswith('/'):
+                clean_remote_path = '/' + clean_remote_path
+            return f"{self.remote_name}:{clean_remote_path}"
     
     def store_file(self, local_path, remote_path):
         """Store a file to remote storage using rclone with exact filename control."""
