@@ -19,12 +19,12 @@ T = TypeVar('T')
 
 def get_or_create(session: Session, model: Type[T], **kwargs) -> T:
     """Get an existing database entry or create a new one.
-    
+
     Args:
         session: Database session
         model: Database model class
         **kwargs: Model attributes
-        
+
     Returns:
         model: Database model instance
     """
@@ -36,7 +36,13 @@ def get_or_create(session: Session, model: Type[T], **kwargs) -> T:
         logger.debug(f"Creating new {model.__name__} with {kwargs}")
         instance = model(**kwargs)
         session.add(instance)
-        session.commit()
+        try:
+            session.commit()
+            logger.debug(f"Successfully created {model.__name__} with ID {instance.id}")
+        except Exception as e:
+            logger.error(f"Failed to create {model.__name__}: {e}")
+            session.rollback()
+            raise
         return instance
 
 
@@ -62,16 +68,22 @@ def get_model_name_id(model_name: str, model_path: str, session: Optional[Sessio
         model = ModelNames()
         model.model_name = model_name
         model.model_path = model_path
-        
+
         query = session.query(ModelNames).filter(and_(
             ModelNames.model_name == model_name,
             ModelNames.model_path == model_path)
         )
-        
+
         if query.count() == 0:
             # Create entry and return ID
             session.add(model)
-            session.commit()
+            try:
+                session.commit()
+                logger.debug(f"Created model name: {model_name} (ID: {model.id})")
+            except Exception as e:
+                logger.error(f"Failed to create model name {model_name}: {e}")
+                session.rollback()
+                raise
             return model.id
         elif query.count() > 1:
             logger.error(f'Multiple identical model_name entries in database: {model_name}')
@@ -181,7 +193,7 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
     job = session.get(PDRModelJob, job_id)
     if not job:
         raise ValueError(f"Job with ID {job_id} not found")
-    
+
     job.status = status
     if status == 'running':
         job.active = True
@@ -189,9 +201,14 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
     elif status in ['finished', 'error', 'skipped', 'exception']:
         job.active = False
         job.pending = False
-    
-    session.commit()
-    logger.info(f"Updated job {job_id} status to '{status}'")
+
+    try:
+        session.commit()
+        logger.info(f"Updated job {job_id} status to '{status}'")
+    except Exception as e:
+        logger.error(f"Failed to update job {job_id} status to '{status}': {e}")
+        session.rollback()
+        raise
 
 
 def get_session() -> Session:

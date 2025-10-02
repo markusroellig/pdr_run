@@ -250,8 +250,14 @@ def register_json_template(name, path, description=None):
     
     # Add the new template to the session and persist to database
     session.add(template)
-    session.commit()
-    
+    try:
+        session.commit()
+        logger.debug(f"Successfully registered JSON template: {name}")
+    except Exception as e:
+        logger.error(f"Failed to register JSON template {name}: {e}")
+        session.rollback()
+        raise
+
     # Return the newly created template record
     return template
 
@@ -289,19 +295,31 @@ def register_json_file(job_id, name, path, template_id=None):
         existing.path = path
         existing.job_id = job_id
         existing.template_id = template_id
-        session.commit()
+        try:
+            session.commit()
+            logger.debug(f"Updated existing JSON file record: {name} (ID: {existing.id})")
+        except Exception as e:
+            logger.error(f"Failed to update JSON file record {name}: {e}")
+            session.rollback()
+            raise
         return existing
     
     # Create new record if no existing file found
     json_file = JSONFile(
         job_id=job_id,
-        name=name, 
+        name=name,
         path=path,
         template_id=template_id,
         sha256_sum=file_hash
     )
     session.add(json_file)
-    session.commit()
+    try:
+        session.commit()
+        logger.debug(f"Registered new JSON file: {name} (ID: {json_file.id})")
+    except Exception as e:
+        logger.error(f"Failed to register JSON file {name}: {e}")
+        session.rollback()
+        raise
     return json_file
 
 def process_json_template(template_path, parameters, output_path=None):
@@ -419,8 +437,14 @@ def archive_job_json(job_id, tmp_json_path, archive_dir):
     json_file = session.query(JSONFile).filter_by(job_id=job_id).first()
     if json_file:
         json_file.archived_path = archive_path
-        session.commit()
-    
+        try:
+            session.commit()
+            logger.debug(f"Updated archived path for JSON file (job {job_id}): {archive_path}")
+        except Exception as e:
+            logger.error(f"Failed to update archived path for job {job_id}: {e}")
+            session.rollback()
+            raise
+
     return archive_path
 
 def validate_json(json_path, schema_path=None):
@@ -498,11 +522,17 @@ def update_job_output_json(job_id, output_path):
     # Register the output file in the database
     filename = os.path.basename(output_path)
     json_file = register_json_file(job_id, filename, output_path)
-    
+
     # Update the job record to point to this output file
     job.output_json_id = json_file.id
-    session.commit()
-    
+    try:
+        session.commit()
+        logger.debug(f"Updated job {job_id} with output JSON ID: {json_file.id}")
+    except Exception as e:
+        logger.error(f"Failed to update job {job_id} with output JSON: {e}")
+        session.rollback()
+        raise
+
     return json_file
 
 def initialize_default_templates(template_dir=None):
@@ -620,8 +650,15 @@ def update_json_template(template_id, name=None, path=None, description=None):
         template.sha256_sum = get_json_hash(path)
     if description:
         template.description = description
-        
-    session.commit()
+
+    try:
+        session.commit()
+        logger.debug(f"Updated JSON template {template_id}: {name or template.name}")
+    except Exception as e:
+        logger.error(f"Failed to update JSON template {template_id}: {e}")
+        session.rollback()
+        raise
+
     return template
 
 def delete_json_template(template_id, force=False):
@@ -657,11 +694,23 @@ def delete_json_template(template_id, force=False):
     if force and template.instances:
         for instance in template.instances:
             instance.template_id = None
-        session.commit()
-    
+        try:
+            session.commit()
+            logger.debug(f"Unlinked {len(template.instances)} instances from template {template_id}")
+        except Exception as e:
+            logger.error(f"Failed to unlink instances from template {template_id}: {e}")
+            session.rollback()
+            raise
+
     # Delete the template
     session.delete(template)
-    session.commit()
+    try:
+        session.commit()
+        logger.debug(f"Deleted JSON template {template_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete JSON template {template_id}: {e}")
+        session.rollback()
+        raise
     return True
 
 def get_all_json_files():
@@ -710,6 +759,12 @@ def cleanup_orphaned_json_files(delete=False):
         for json_file in orphaned:
             logger.info(f"Deleting orphaned JSON file: {json_file.name} (ID: {json_file.id})")
             session.delete(json_file)
-        session.commit()
-    
+        try:
+            session.commit()
+            logger.debug(f"Successfully deleted {len(orphaned)} orphaned JSON files")
+        except Exception as e:
+            logger.error(f"Failed to delete orphaned JSON files: {e}")
+            session.rollback()
+            raise
+
     return orphaned
