@@ -210,34 +210,52 @@ storage:
 
 2. **Start MySQL service** (using Docker for development):
    ```bash
-   cd sandbox
-   docker compose up -d mysql
+   make start-services
+   # or manually: cd sandbox && docker compose up -d mysql
    ```
 
 ### Database Setup
 
-1. **Create database and user** (if not using sandbox):
-   ```sql
-   CREATE DATABASE pdr_test;
-   CREATE USER 'pdr_user'@'%' IDENTIFIED BY 'your_password';
-   GRANT ALL PRIVILEGES ON pdr_test.* TO 'pdr_user'@'%';
-   FLUSH PRIVILEGES;
-   ```
+#### Using Sandbox (Recommended for Development)
 
-2. **Configure environment**:
-   ```bash
-   export PDR_DB_TYPE=mysql
-   export PDR_DB_HOST=localhost
-   export PDR_DB_PORT=3306
-   export PDR_DB_DATABASE=pdr_test
-   export PDR_DB_USERNAME=pdr_user
-   export PDR_DB_PASSWORD=your_password
-   ```
+The sandbox environment **automatically creates** the database and user when MySQL starts:
 
-3. **Test connection**:
-   ```bash
-   python sandbox/test_db_connections.py
-   ```
+```bash
+# 1. Setup sandbox directories
+make setup-sandbox
+
+# 2. Start services (MySQL auto-creates database and user)
+make start-services
+
+# 3. Test connection
+python sandbox/test_db_connections.py
+```
+
+**Note:** No manual database creation required! Docker automatically creates:
+- Database: `pdr_test`
+- User: `pdr_user` with password `pdr_password`
+
+#### Manual Setup (Production/Non-Docker)
+
+If not using the sandbox, create the database and user manually:
+
+```sql
+CREATE DATABASE pdr_test;
+CREATE USER 'pdr_user'@'%' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON pdr_test.* TO 'pdr_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+#### Configure Environment
+
+```bash
+export PDR_DB_TYPE=mysql
+export PDR_DB_HOST=localhost
+export PDR_DB_PORT=3306
+export PDR_DB_DATABASE=pdr_test
+export PDR_DB_USERNAME=pdr_user
+export PDR_DB_PASSWORD=your_password
+```
 
 ### Running MySQL Integration Tests
 
