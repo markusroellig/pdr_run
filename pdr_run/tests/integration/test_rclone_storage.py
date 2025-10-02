@@ -149,19 +149,76 @@ class TestRCloneIntegration:
             'rclone_remote': f"{rclone_test_setup['remote_name']}:{rclone_test_setup['test_remote_dir']}",
             'use_mount': False
         }
-        
+
         storage = RCloneStorage(config)
-        
+
         # Create test file directly
         test_file_path = Path(rclone_test_setup['test_remote_dir']) / 'exists_test.txt'
         test_file_path.parent.mkdir(parents=True, exist_ok=True)
         test_file_path.write_text('exists')
-        
+
         # Test existing file
         assert storage.file_exists('exists_test.txt') is True
-        
+
         # Test non-existing file
         assert storage.file_exists('nonexistent.txt') is False
+
+    def test_filename_preservation(self, rclone_test_setup):
+        """Test that files are stored with exact target filenames (Issue #10 related)."""
+        config = {
+            'base_dir': rclone_test_setup['test_base_dir'],
+            'rclone_remote': f"{rclone_test_setup['remote_name']}:{rclone_test_setup['test_remote_dir']}",
+            'use_mount': False
+        }
+
+        storage = RCloneStorage(config)
+
+        # Test Case 1: Different source and target filenames
+        test_content = "Test content for filename preservation"
+        source_file = Path(rclone_test_setup['test_base_dir']) / 'source_name.txt'
+        source_file.write_text(test_content)
+
+        # Store with different target name
+        target_path = 'models/test1/target_name.txt'
+        result = storage.store_file(str(source_file), target_path)
+        assert result is True, "store_file should succeed"
+
+        # Check the file exists with the exact target name
+        expected_file = Path(rclone_test_setup['test_remote_dir']) / 'models' / 'test1' / 'target_name.txt'
+        assert expected_file.exists(), f"File should exist at {expected_file}"
+        assert expected_file.read_text() == test_content, "Content should match"
+
+        # Verify old filename doesn't exist
+        old_file = Path(rclone_test_setup['test_remote_dir']) / 'models' / 'test1' / 'source_name.txt'
+        assert not old_file.exists(), f"Old filename {old_file} should not exist"
+
+    def test_atomic_copyto_implementation(self, rclone_test_setup):
+        """Verify that store_file uses atomic copyto (fixes Issue #10 race conditions)."""
+        config = {
+            'base_dir': rclone_test_setup['test_base_dir'],
+            'rclone_remote': f"{rclone_test_setup['remote_name']}:{rclone_test_setup['test_remote_dir']}",
+            'use_mount': False
+        }
+
+        storage = RCloneStorage(config)
+
+        # Check that the implementation uses copyto
+        import inspect
+        source = inspect.getsource(storage.store_file)
+
+        # The new implementation should use 'copyto'
+        assert 'copyto' in source, (
+            "store_file should use 'rclone copyto' for atomic transfers"
+        )
+
+        # Verify moveto is not used in actual rclone commands (prevents race conditions)
+        import re
+        rclone_commands = re.findall(r"cmd\s*=\s*\[.*?\]", source, re.DOTALL)
+        for cmd in rclone_commands:
+            assert 'moveto' not in cmd, (
+                f"Found 'moveto' in rclone command: {cmd}\n"
+                "store_file should not use 'rclone moveto' (causes race conditions)"
+            )
 
 
 def test_rclone_configuration():

@@ -45,9 +45,6 @@ from .json_handlers import (
     update_job_output_json
 )
 
-# Migration utilities
-from .migration import create_tables
-
 # Expose the new recommended way
 __all__ = [
     # New API
@@ -94,7 +91,4 @@ __all__ = [
     'get_json_templates',
     'get_job_json_files',
     'update_job_output_json',
-    
-    # Migration
-    'create_tables',
 ]

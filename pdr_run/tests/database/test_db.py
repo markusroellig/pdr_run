@@ -6,7 +6,6 @@ from unittest.mock import patch, MagicMock
 
 from sqlalchemy import text
 from pdr_run.database.db_manager import get_db_manager
-from pdr_run.database.migration import create_tables
 from pdr_run.database.models import Base
 
 # Use this fixture to create a temporary database file
@@ -43,8 +42,8 @@ def test_create_tables(temp_db_file):
 
     # Create connection and tables
     manager = get_db_manager()
+    manager.create_tables()
     engine = manager.engine
-    create_tables(engine)
 
     # Verify tables exist - using database-agnostic approach
     with engine.connect() as conn:
@@ -142,10 +141,11 @@ def test_store_model_run(temp_db_file):
     # Set environment for SQLite
     os.environ["PDR_DB_TYPE"] = "sqlite"
     os.environ["PDR_DB_FILE"] = temp_db_file
-    
+
     # Create tables
-    engine = db_conn.get_engine()
-    create_tables(engine)
+    manager = get_db_manager()
+    manager.create_tables()
+    engine = manager.engine
     
     # Import models and create a new session
     from pdr_run.database.models import PDRModelJob
