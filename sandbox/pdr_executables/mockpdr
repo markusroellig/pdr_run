@@ -1,0 +1,9 @@
+#!/bin/bash
+echo "Mock PDR executable running..."
+sleep 2
+touch pdroutput/pdrstruct_s.hdf5
+touch pdroutput/pdrchem_c.hdf5
+touch pdroutput/pdrout.hdf
+touch pdroutput/TEXTOUT
+touch pdroutput/CTRL_IND
+echo "Mock PDR completed successfully"

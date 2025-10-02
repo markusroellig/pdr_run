@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """Sandbox environment setup script."""
 
-import os
-import sys
-import shutil
-import subprocess
 from pathlib import Path
 
 def create_directory_structure():
     """Create the sandbox directory structure."""
+    base_dir = Path(__file__).parent
     directories = [
         "storage",
-        "sqlite", 
+        "sqlite",
         "logs",
         "pdr_executables",
         "mysql/init",
@@ -22,13 +19,15 @@ def create_directory_structure():
         "environments",
         "templates"
     ]
-    
+
     for directory in directories:
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        print(f"Created directory: {directory}")
+        dir_path = base_dir / directory
+        dir_path.mkdir(parents=True, exist_ok=True)
+        print(f"Created directory: {dir_path}")
 
 def create_mock_executables():
     """Create mock PDR executables for testing."""
+    base_dir = Path(__file__).parent
     executables = {
         "mockpdr": """#!/bin/bash
 echo "Mock PDR executable running..."
@@ -58,8 +57,8 @@ touch Out/mock.out
 echo "Mock MRT completed successfully"
 """
     }
-    
-    exe_dir = Path("sandbox/pdr_executables")
+
+    exe_dir = base_dir / "pdr_executables"
     for name, content in executables.items():
         exe_path = exe_dir / name
         exe_path.write_text(content)
@@ -68,6 +67,7 @@ echo "Mock MRT completed successfully"
 
 def create_test_templates():
     """Create test templates."""
+    base_dir = Path(__file__).parent
     pdrnew_template = """
                  INPUT-DATA for PDR program (SANDBOX VERSION)
 
@@ -84,7 +84,7 @@ KT_VARspecies_
 Grid flag:
 KT_VARgrid_
 """
-    
+
     json_template = """{
   "model_name": "sandbox_test",
   "parameters": {
@@ -94,25 +94,21 @@ KT_VARgrid_
     "species": KT_VARspecies_
   }
 }"""
-    
-    templates_dir = Path("sandbox/templates")
+
+    templates_dir = base_dir / "templates"
     (templates_dir / "PDRNEW.INP.template").write_text(pdrnew_template)
     (templates_dir / "pdr_config.json.template").write_text(json_template)
     print("Created test templates")
 
 def setup_database_init_scripts():
     """Create database initialization scripts."""
+    base_dir = Path(__file__).parent
+
+    # Note: MySQL database and user are auto-created by docker-compose environment variables
+    # This init script only creates additional test tables
     mysql_init = """
 -- MySQL initialization script for PDR sandbox
-CREATE DATABASE IF NOT EXISTS pdr_test;
-
--- Create user first, then grant permissions
-CREATE USER IF NOT EXISTS 'pdr_user'@'%' IDENTIFIED BY 'pdr_password';
-GRANT ALL PRIVILEGES ON pdr_test.* TO 'pdr_user'@'%';
-FLUSH PRIVILEGES;
-
--- Switch to the database
-USE pdr_test;
+-- Note: Database 'pdr_test' and user 'pdr_user' are auto-created by Docker
 
 -- Create a test table to verify connection
 CREATE TABLE IF NOT EXISTS connection_test (
@@ -123,7 +119,7 @@ CREATE TABLE IF NOT EXISTS connection_test (
 
 INSERT INTO connection_test (message) VALUES ('MySQL sandbox initialized successfully');
 """
-    
+
     postgres_init = """
 -- PostgreSQL initialization script for PDR sandbox
 CREATE TABLE IF NOT EXISTS connection_test (
@@ -134,14 +130,15 @@ CREATE TABLE IF NOT EXISTS connection_test (
 
 INSERT INTO connection_test (message) VALUES ('PostgreSQL sandbox initialized successfully');
 """
-    
-    Path("sandbox/mysql/init/01-init.sql").write_text(mysql_init)
-    Path("sandbox/postgres/init/01-init.sql").write_text(postgres_init)
+
+    (base_dir / "mysql/init/01-init.sql").write_text(mysql_init)
+    (base_dir / "postgres/init/01-init.sql").write_text(postgres_init)
     print("Created database initialization scripts")
 
 def create_test_scripts():
     """Create comprehensive test scripts."""
-    
+    base_dir = Path(__file__).parent
+
     # Database connection test
     db_test = """#!/usr/bin/env python3
 \"\"\"Test database connections.\"\"\"
@@ -151,6 +148,11 @@ import sys
 sys.path.insert(0, '.')
 
 def test_mysql():
+    # Clear cached modules to ensure fresh connection
+    for module in list(sys.modules.keys()):
+        if module.startswith('pdr_run.database'):
+            del sys.modules[module]
+
     os.environ.update({
         'PDR_DB_TYPE': 'mysql',
         'PDR_DB_HOST': 'localhost',
@@ -159,18 +161,19 @@ def test_mysql():
         'PDR_DB_USERNAME': 'pdr_user',
         'PDR_DB_PASSWORD': 'pdr_password'
     })
-    
+
     try:
         from pdr_run.database.connection import init_db
+        from sqlalchemy import text
         session, engine = init_db()
         print("✓ MySQL connection successful")
-        
+
         # Test query
-        result = session.execute("SELECT message FROM connection_test LIMIT 1")
+        result = session.execute(text("SELECT message FROM connection_test LIMIT 1"))
         message = result.fetchone()[0]
         print(f"✓ MySQL query successful: {message}")
         session.close()
-        
+
     except Exception as e:
         print(f"✗ MySQL connection failed: {e}")
 
@@ -314,32 +317,35 @@ if __name__ == "__main__":
     test_full_workflow()
 """
     
-    Path("sandbox/test_db_connections.py").write_text(db_test)
-    Path("sandbox/test_storage.py").write_text(storage_test)
-    Path("sandbox/test_integration.py").write_text(integration_test)
-    
+    (base_dir / "test_db_connections.py").write_text(db_test)
+    (base_dir / "test_storage.py").write_text(storage_test)
+    (base_dir / "test_integration.py").write_text(integration_test)
+
     # Make scripts executable
     for script in ["test_db_connections.py", "test_storage.py", "test_integration.py"]:
-        Path(f"sandbox/{script}").chmod(0o755)
-    
+        (base_dir / script).chmod(0o755)
+
     print("Created test scripts")
 
 def main():
     """Set up the complete sandbox environment."""
     print("Setting up PDR Framework sandbox environment...")
-    
+
     create_directory_structure()
     create_mock_executables()
     create_test_templates()
     setup_database_init_scripts()
     create_test_scripts()
-    
+
     print("\nSandbox setup complete!")
     print("\nNext steps:")
-    print("1. Start services: docker-compose up -d")
+    print("1. Start services: make start-services")
+    print("   (or: cd sandbox && docker compose up -d)")
     print("2. Test database connections: python sandbox/test_db_connections.py")
     print("3. Test storage: python sandbox/test_storage.py")
     print("4. Run integration test: python sandbox/test_integration.py")
+    print("\nNote: MySQL database and user are auto-created by Docker.")
+    print("No manual database setup is required!")
 
 if __name__ == "__main__":
     main()

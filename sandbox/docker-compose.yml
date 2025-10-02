@@ -13,7 +13,7 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./sandbox/mysql/init:/docker-entrypoint-initdb.d
+      - ./mysql/init:/docker-entrypoint-initdb.d
     networks:
       - pdr_network
 
@@ -28,7 +28,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sandbox/postgres/init:/docker-entrypoint-initdb.d
+      - ./postgres/init:/docker-entrypoint-initdb.d
     networks:
       - pdr_network
 
@@ -47,7 +47,7 @@ services:
       - "2222:22"
     command: pdr_user:pdr_password:1001
     volumes:
-      - ./sandbox/sftp_data:/home/pdr_user/data
+      - ./sftp_data:/home/pdr_user/data
     networks:
       - pdr_network
 

@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "Mock Onion executable running..."
+sleep 1
+touch onionoutput/jerg_CO.smli
+echo "Mock Onion completed successfully"

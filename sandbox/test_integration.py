@@ -1,80 +1,59 @@
 #!/usr/bin/env python3
-"""Integration tests for the sandbox environment."""
+"""Integration test for PDR framework."""
 
 import os
 import sys
-from pathlib import Path
+import tempfile
+sys.path.insert(0, '.')
 
-# Add the parent directory to Python path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-def test_basic_imports():
-    """Test that basic PDR modules can be imported."""
-    print("=== Testing Basic Imports ===")
+def test_full_workflow():
+    # Set up environment
+    os.environ.update({
+        'PDR_DB_TYPE': 'sqlite',
+        'PDR_DB_FILE': './sandbox/sqlite/integration_test.db',
+        'PDR_STORAGE_TYPE': 'local',
+        'PDR_STORAGE_DIR': './sandbox/storage'
+    })
     
     try:
-        import pdr_run
-        print("✓ pdr_run package imported")
+        from pdr_run.core.engine import run_model
+        from pdr_run.config.default_config import DEFAULT_PARAMETERS
         
-        from pdr_run.config import default_config
-        print("✓ Configuration module imported")
+        # Set up test parameters
+        test_params = DEFAULT_PARAMETERS.copy()
+        test_params['dens'] = ["30"]
+        test_params['chi'] = ["10"]
+        test_params['mass'] = ["-10"]
+        test_params['metal'] = ["100"]
         
-        from pdr_run.database import models
-        print("✓ Database models imported")
+        # Configuration for sandbox
+        config = {
+            'pdr': {
+                'base_dir': './sandbox/pdr_executables',
+                'pdr_file_name': 'mockpdr',
+                'onion_file_name': 'mockonion',
+                'getctrlind_file_name': 'mockgetctrlind',
+                'mrt_file_name': 'mockmrt',
+                'pdrinp_template_file': 'PDRNEW.INP.template',
+                'json_template_file': 'pdr_config.json.template'
+            },
+            'parameters': test_params
+        }
         
-        return True
+        # Run model
+        job_id = run_model(
+            params=test_params,
+            model_name="sandbox_test",
+            config=config
+        )
         
-    except ImportError as e:
-        print(f"✗ Import failed: {e}")
-        return False
-
-def test_mock_executables():
-    """Test that mock executables are available."""
-    print("\n=== Testing Mock Executables ===")
-    
-    exe_dir = Path("pdr_executables")
-    if not exe_dir.exists():
-        print("✓ Mock executables directory not found (expected in some setups)")
-        return True
-    
-    expected_exes = ["mockpdr", "mockonion", "mockgetctrlind", "mockmrt"]
-    found_exes = []
-    
-    for exe in expected_exes:
-        exe_path = exe_dir / exe
-        if exe_path.exists() and exe_path.is_file():
-            found_exes.append(exe)
-            print(f"✓ Found mock executable: {exe}")
-    
-    if found_exes:
-        print(f"✓ Found {len(found_exes)}/{len(expected_exes)} mock executables")
-        return True
-    else:
-        print("✓ No mock executables found (may be created on-demand)")
-        return True
-
-def main():
-    """Run integration tests."""
-    print("PDR Integration Tests")
-    print("=" * 35)
-    
-    results = []
-    results.append(test_basic_imports())
-    results.append(test_mock_executables())
-    
-    passed = sum(results)
-    total = len(results)
-    
-    print(f"\n=== Test Summary ===")
-    print(f"Passed: {passed}/{total}")
-    
-    if passed == total:
-        print("✓ All integration tests passed!")
-        return 0
-    else:
-        print("✗ Some integration tests failed!")
-        return 1
+        print(f"✓ Integration test successful - Job ID: {job_id}")
+        
+    except Exception as e:
+        print(f"✗ Integration test failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    sys.exit(main())
+    print("Running integration test...")
+    test_full_workflow()

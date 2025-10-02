@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "Mock GetCtrlInd executable running..."
+touch CTRL_IND
+echo "Mock GetCtrlInd completed successfully"
