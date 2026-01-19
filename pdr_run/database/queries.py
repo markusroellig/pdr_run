@@ -96,6 +96,15 @@ def retry_on_db_error(max_retries: int = 3, initial_delay: float = 1.0, backoff:
                         logger.warning(f"Session state error in {func.__name__}: {e}. Creating new session...")
                         # Get a new session and retry once
                         if 'session' in kwargs:
+                            # Close old session before replacing to prevent leak
+                            old_session = kwargs['session']
+                            try:
+                                old_session.close()
+                                logger.debug("Closed stale session before replacement")
+                            except Exception as cleanup_err:
+                                logger.debug(f"Error closing stale session: {cleanup_err}")
+
+                            # Create new session and retry
                             kwargs['session'] = get_db_manager().get_session()
                             return func(*args, **kwargs)
                     raise

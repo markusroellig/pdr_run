@@ -150,8 +150,10 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
         logger.debug(f"Database config type: {type(db_config)}")
         logger.debug(f"Database config items: {list(db_config.items()) if isinstance(db_config, dict) else 'Not a dict'}")
 
-    
-    db_manager = get_db_manager(db_config)  # Pass the database config
+    # Initialize the global DatabaseManager instance with config
+    # This is the ONLY place where we should pass config to get_db_manager
+    # All subsequent calls (including from workers) will reuse this instance
+    db_manager = get_db_manager(db_config)
     db_manager.log_diagnostics("main:create_database_entries:manager_ready")
     
     # CREATE TABLES BEFORE GETTING SESSION
@@ -353,21 +355,14 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None, kee
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"keep_tmp flag for job {job_id}: {keep_tmp}")
 
-    # FIX: Pass database config to worker (same pattern as create_database_entries)
-    db_config = None
-    if config and 'database' in config:
-        db_config = config['database']
-        logger.debug(f"Using database config from provided config in worker: {db_config}")
-    
-    db_manager = get_db_manager(db_config)  # Pass config to worker
+    # FIX: Reuse global DatabaseManager instance instead of creating new ones
+    # Tables have already been created in the main process, no need to recreate here
+    db_manager = get_db_manager()  # Get global instance without config parameter
     db_manager.log_diagnostics(f"worker-{os.getpid()}:init")
-    
+
     try:
-        # Ensure tables exist in this worker process
-        try:
-            db_manager.create_tables()
-        except Exception as e:
-            logger.warning(f"Job {job_id}: Could not ensure database tables exist: {e}")
+        # DO NOT call create_tables() here - it causes connection leaks
+        # Tables are created once in create_database_entries() in the main process
         session = db_manager.get_session()
 
         try:

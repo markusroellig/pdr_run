@@ -597,27 +597,36 @@ class DatabaseManager:
             session.close()  # Use close() instead of remove() for regular sessions
             
     def create_tables(self) -> None:
-        """Create all database tables defined in models."""
+        """Create all database tables defined in models.
+
+        Note: This method should only be called once in the main process.
+        Worker processes should reuse the existing database connection pool.
+        """
+        # Use a connection scope to ensure connection is returned to pool
+        connection = None
         try:
             # Force import all models to ensure they're registered with Base
             # Import the entire models module to trigger all model definitions
             import pdr_run.database.models # This should make all models known to Base
-            
+
             # Also explicitly import each model class to ensure registration - this might be redundant if the above works
             # from pdr_run.database.models import (
             #     ModelNames, User, KOSMAtauExecutable, ChemicalDatabase,
-            #     KOSMAtauParameters, PDRModelJob, HDFFile, JSONTemplate, 
+            #     KOSMAtauParameters, PDRModelJob, HDFFile, JSONTemplate,
             #     JSONFile, ModelRun
             # )
-            
+
             logger.info("Attempting to create database tables...")
             logger.debug(f"Engine URL for create_tables: {self.engine.url}")
             logger.debug(f"Base object ID in create_tables: {id(Base)}")
             logger.debug(f"Tables registered in Base.metadata before create_all: {list(Base.metadata.tables.keys())}")
-            
-            # Create all tables
-            Base.metadata.create_all(self.engine)
-            
+
+            # Get a connection from the pool
+            connection = self.engine.connect()
+
+            # Create all tables using the explicit connection
+            Base.metadata.create_all(bind=connection)
+
             # Verify tables were created
             inspector = None
             try:
@@ -632,12 +641,17 @@ class DatabaseManager:
 
             except Exception as e:
                 logger.warning(f"Could not verify table creation via inspector: {e}")
-                
+
             logger.info("Database table creation process finished.")
-            
+
         except Exception as e:
             logger.error(f"Failed to create database tables: {e}", exc_info=True)
             raise
+        finally:
+            # CRITICAL: Always close the connection to return it to the pool
+            if connection is not None:
+                connection.close()
+                logger.debug("Connection returned to pool after create_tables()")
         
     def drop_tables(self) -> None:
         """Drop all database tables."""
@@ -676,14 +690,51 @@ class DatabaseManager:
 
 # Global instance for backward compatibility
 _db_manager: Optional[DatabaseManager] = None
+_db_manager_lock = threading.Lock()
 
 
-def get_db_manager(config: Optional[Dict[str, Any]] = None) -> DatabaseManager:
-    """Get or create global database manager instance."""
+def get_db_manager(config: Optional[Dict[str, Any]] = None, force_new: bool = False) -> DatabaseManager:
+    """Get or create global database manager instance with thread safety.
+
+    Args:
+        config: Database configuration. If None, uses existing instance or creates with defaults.
+        force_new: If True, always create a new instance even if one exists.
+
+    Returns:
+        DatabaseManager: The global database manager instance.
+
+    Note:
+        To avoid connection leaks in parallel execution:
+        - Main process should call this once with config to initialize
+        - Worker processes should call this without config to reuse the same instance
+        - Use force_new=True only when you need a truly separate database manager
+
+        This function uses double-checked locking for thread safety and performance:
+        - Fast path: If already initialized and not force_new, return immediately (no lock)
+        - Slow path: Acquire lock only when creating/replacing instance
+    """
     global _db_manager
-    # Always create new instance if config is provided
-    if _db_manager is None or config is not None:
-        _db_manager = DatabaseManager(config)
+
+    # Fast path: already initialized and not forcing new (common case, no lock needed)
+    if _db_manager is not None and not force_new:
+        logger.debug(f"Reusing existing DatabaseManager instance (manager_id={_db_manager.manager_id})")
+        return _db_manager
+
+    # Slow path: need to initialize or replace (uncommon case, acquire lock)
+    with _db_manager_lock:
+        # Double-check after acquiring lock (another thread may have initialized)
+        if _db_manager is None:
+            logger.debug("Creating new DatabaseManager instance (first initialization)")
+            _db_manager = DatabaseManager(config)
+        elif force_new:
+            logger.warning("Creating new DatabaseManager instance (force_new=True)")
+            if _db_manager:
+                _db_manager.close()
+            _db_manager = DatabaseManager(config)
+        else:
+            # Another thread initialized while we were waiting for lock
+            logger.debug(f"Reusing existing DatabaseManager instance (manager_id={_db_manager.manager_id})")
+
     return _db_manager
 
 
