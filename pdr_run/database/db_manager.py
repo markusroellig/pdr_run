@@ -23,7 +23,12 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool, QueuePool, StaticPool
 
 from pdr_run.database.base import Base
-import pdr_run.database.models 
+import pdr_run.database.models
+from pdr_run.utils.logging import (
+    sanitize_config,
+    is_sensitive_field,
+    DEFAULT_SENSITIVE_FIELDS
+)
 
 logger = logging.getLogger('dev')
 
@@ -68,17 +73,20 @@ class DatabaseManager:
         
         # Start with defaults
         final_config = DATABASE_CONFIG.copy()
-        logger.debug(f"Starting with defaults: {DATABASE_CONFIG}")
+        logger.debug(f"Starting with defaults: {sanitize_config(DATABASE_CONFIG)}")
         
         # Override with provided config (config file) - THIS IS THE KEY FIX
         if config:
-            logger.debug(f"Config file provided: {config}")
+            logger.debug(f"Config file provided: {sanitize_config(config)}")
             # IMPORTANT: Only update if the config file actually specifies the values
             # This ensures config file takes precedence over defaults
             for key, value in config.items():
                 if value is not None:  # Only override if explicitly set in config
                     final_config[key] = value
-                    logger.debug(f"Config file override: {key}={value}")
+                    if not is_sensitive_field(key, DEFAULT_SENSITIVE_FIELDS):
+                        logger.debug(f"Config file override: {key}={value}")
+                    else:
+                        logger.debug(f"Config file override: {key}=***")
         
         # Override with environment variables (highest precedence)
         env_overrides = {
@@ -94,7 +102,8 @@ class DatabaseManager:
         for env_var, config_key in env_overrides.items():
             env_value = os.environ.get(env_var)
             if env_value is not None:
-                logger.debug(f"Environment override: {env_var}={env_value} -> {config_key}")
+                display_value = '***' if config_key in ['password', 'username'] else env_value
+                logger.debug(f"Environment override: {env_var}={display_value} -> {config_key}")
                 # Special handling for port (must be int)
                 if config_key == 'port' and env_value:
                     try:
@@ -105,10 +114,7 @@ class DatabaseManager:
                     final_config[config_key] = env_value
 
         # Log final configuration (without password)
-        safe_config = final_config.copy()
-        if 'password' in safe_config and safe_config['password']:
-            safe_config['password'] = '***'
-        logger.debug(f"Final database configuration: {safe_config}")
+        logger.debug(f"Final database configuration: {sanitize_config(final_config)}")
         
         # Validate the final configuration
         self._validate_config(final_config)

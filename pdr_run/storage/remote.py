@@ -12,6 +12,7 @@ import logging
 import sys
 import paramiko
 from pdr_run.storage.base import Storage
+from pdr_run.utils.logging import get_password_status
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -104,11 +105,7 @@ class SFTPStorage(RemoteStorage):
         self.logger.debug("=== SFTP STORAGE INITIALIZATION ===")
         self.logger.debug(f"Host: {host}")
         self.logger.debug(f"User: {user}")
-        self.logger.debug(f"Password type: {type(password)}")
-        self.logger.debug(f"Password length: {len(password) if password else 0} chars")
-        self.logger.debug(f"Password is None: {password is None}")
-        self.logger.debug(f"Password is empty string: {password == ''}")
-        self.logger.debug(f"Password bool: {bool(password)}")
+        self.logger.debug(f"Password status: {get_password_status(password)}")
         self.logger.debug(f"Base dir: {base_dir}")
         
         super().__init__(host, user, password, base_dir)

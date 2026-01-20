@@ -70,6 +70,7 @@ from datetime import datetime
 from pdr_run.core.engine import run_model, run_parameter_grid
 from pdr_run.config.default_config import DEFAULT_PARAMETERS
 from pdr_run.config.logging_config import LOGGING_CONFIG
+from pdr_run.utils.logging import sanitize_yaml_content
 
 # Configure logging
 logging.config.dictConfig(LOGGING_CONFIG)
@@ -181,7 +182,7 @@ def load_config(config_file):
     try:
         with open(config_file, 'r') as f:
             config_content = f.read()
-            logger.debug(f"Raw config content:\n{config_content}")
+            logger.debug(f"Raw config content:\n{sanitize_yaml_content(config_content)}")
             config = yaml.safe_load(config_content)
         logger.info(f"Loaded configuration from {config_file}")
         # Log top-level structure for debugging

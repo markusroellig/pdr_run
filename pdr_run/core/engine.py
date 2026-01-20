@@ -99,6 +99,7 @@ from pdr_run.models.parameters import (
 )
 from pdr_run.models.kosma_tau import run_kosma_tau
 from pdr_run.storage.base import get_storage_backend
+from pdr_run.utils.logging import sanitize_config
 
 # Configure logger with more detail
 logger = logging.getLogger('dev')
@@ -146,9 +147,10 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     db_config = None
     if config and 'database' in config:
         db_config = config['database']
-        logger.debug(f"Using database config from provided config: {db_config}")
+        logger.debug(f"Using database config from provided config: {sanitize_config(db_config)}")
         logger.debug(f"Database config type: {type(db_config)}")
-        logger.debug(f"Database config items: {list(db_config.items()) if isinstance(db_config, dict) else 'Not a dict'}")
+        sanitized = sanitize_config(db_config) if isinstance(db_config, dict) else 'Not a dict'
+        logger.debug(f"Database config items: {list(sanitized.items()) if isinstance(sanitized, dict) else sanitized}")
 
     # Initialize the global DatabaseManager instance with config
     # This is the ONLY place where we should pass config to get_db_manager

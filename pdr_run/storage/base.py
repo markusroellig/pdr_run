@@ -3,6 +3,7 @@
 import os
 import logging
 from abc import ABC, abstractmethod
+from pdr_run.utils.logging import sanitize_config
 
 logger = logging.getLogger("dev")
 
@@ -21,7 +22,7 @@ def get_storage_backend(config=None):
     # Log all inputs
     logger.debug("=== STORAGE BACKEND SELECTION DEBUG ===")
     logger.debug(f"Config parameter type: {type(config)}")
-    logger.debug(f"Config parameter value: {config}")
+    logger.debug(f"Config parameter value: {sanitize_config(config) if isinstance(config, dict) else config}")
     # Check environment variables first
     env_storage_type = os.environ.get("PDR_STORAGE_TYPE", "local")
     logger.debug(f"PDR_STORAGE_TYPE environment variable: {env_storage_type}")
@@ -89,7 +90,7 @@ def get_storage_backend(config=None):
                 'use_mount': os.environ.get("PDR_STORAGE_USE_MOUNT", "false").lower() == "true",
                 'remote_path_prefix': os.environ.get("PDR_STORAGE_REMOTE_PATH_PREFIX", None)
             }
-        logger.debug(f"RClone config: {rclone_config}")
+        logger.debug(f"RClone config: {sanitize_config(rclone_config)}")
         return RCloneStorage(rclone_config)
     elif storage_type == "remote":
         from pdr_run.storage.remote import RemoteStorage
