@@ -268,7 +268,9 @@ def print_configuration(params, model_name, config, parallel=False, n_workers=No
     # Print configuration details if available
     if config:
         print("\n--- Additional Configuration ---")
-        for section, settings in sorted(config.items()):
+        # Sanitize config before printing to prevent password leaks
+        sanitized_config = sanitize_config(config) if isinstance(config, dict) else config
+        for section, settings in sorted(sanitized_config.items()):
             print(f"\n{section}:")
             if isinstance(settings, dict):
                 for key, value in sorted(settings.items()):

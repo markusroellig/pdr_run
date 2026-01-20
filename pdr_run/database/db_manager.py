@@ -26,6 +26,7 @@ from pdr_run.database.base import Base
 import pdr_run.database.models
 from pdr_run.utils.logging import (
     sanitize_config,
+    sanitize_connection_string,
     is_sensitive_field,
     DEFAULT_SENSITIVE_FIELDS
 )
@@ -623,7 +624,7 @@ class DatabaseManager:
             # )
 
             logger.info("Attempting to create database tables...")
-            logger.debug(f"Engine URL for create_tables: {self.engine.url}")
+            logger.debug(f"Engine URL for create_tables: {sanitize_connection_string(str(self.engine.url))}")
             logger.debug(f"Base object ID in create_tables: {id(Base)}")
             logger.debug(f"Tables registered in Base.metadata before create_all: {list(Base.metadata.tables.keys())}")
 
