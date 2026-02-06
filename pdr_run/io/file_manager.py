@@ -26,18 +26,22 @@ def create_dir(path):
     except FileExistsError:
         logger.warning(f"Directory {path} already exists")
 
-def copy_dir(source, target):
+def copy_dir(source, target, symlinks=False):
     """Copy a directory to another location.
     
     Args:
         source (str): Source directory path
         target (str): Target directory path
+        symlinks (bool): If True, symlinks are copied as symlinks.
+                         If False (default), the contents of symlinks are copied.
     """
     try:
-        shutil.copytree(source, target)
-        logger.info(f"Successfully copied the directory {target}")
+        shutil.copytree(source, target, symlinks=symlinks)
+        logger.info(f"Successfully copied the directory {source} to {target} (symlinks={symlinks})")
     except FileExistsError:
-        logger.warning(f"Directory {target} already exists")
+        logger.warning(f"Target directory {target} already exists when copying from {source}. Skipping copy.")
+    except Exception as e:
+        logger.error(f"Error copying directory from {source} to {target}: {str(e)}", exc_info=True)
 
 def move_files(src_path, destination_path):
     """Move a file from one location to another.

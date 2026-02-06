@@ -466,13 +466,22 @@ def _setup_execution_environment(tmp_dir, pdr_dir, config, json_template=None):
         logger.debug(f"Created output directory: {d}")
     
     # Copy input directories
-    for src, dst in zip(PDR_INP_DIRS, pdr_tmp_inpdirs):
-        src_path = os.path.join(pdr_dir, src)
+    for src_dir_name in PDR_INP_DIRS:
+        src_path = os.path.join(pdr_dir, src_dir_name)
+        dst_path = os.path.join(tmp_dir, src_dir_name)
+
         if not os.path.exists(src_path):
             logger.warning(f"Source directory does not exist: {src_path}")
             continue
-        copy_dir(src_path, dst)
-        logger.debug(f"Copied input directory: {src_path} -> {dst}")
+
+        if src_dir_name == 'pdrinpdata':
+            # For pdrinpdata, copy with symlinks=True to preserve symlinks and copy actual files
+            copy_dir(src_path, dst_path, symlinks=True)
+            logger.debug(f"Copied pdrinpdata with symlinks: {src_path} -> {dst_path}")
+        else:
+            # For other input directories, use default behavior (symlinks=False)
+            copy_dir(src_path, dst_path, symlinks=False)
+            logger.debug(f"Copied input directory: {src_path} -> {dst_path}")
     
     # Get executable names
     pdr_file_name = config['pdr'].get('pdr_file_name', PDR_CONFIG['pdr_file_name'])
@@ -493,13 +502,31 @@ def _setup_execution_environment(tmp_dir, pdr_dir, config, json_template=None):
     
     # Set up chemical database
     chem_database = config['pdr'].get('chem_database', PDR_CONFIG['chem_database'])
+    # Set up chemical database
+    chem_database = config['pdr'].get('chem_database', PDR_CONFIG['chem_database'])
     chem_rates_path = os.path.join(tmp_dir, 'pdrinpdata', 'chem_rates.dat')
-    if os.path.exists(chem_rates_path):
-        os.remove(chem_rates_path)
-    os.symlink(
-        os.path.join(tmp_dir, 'pdrinpdata', chem_database),
-        chem_rates_path
-    )
+
+    # Ensure any existing file or symlink at chem_rates_path is removed
+    # os.path.exists() returns False for broken symlinks, but os.path.islink() would be True
+    if os.path.exists(chem_rates_path) or os.path.islink(chem_rates_path):
+        try:
+            os.remove(chem_rates_path) # os.remove can delete symlinks
+            logger.debug(f"Removed existing file or symlink at {chem_rates_path}")
+        except OSError as e:
+            logger.warning(f"Could not remove existing file or symlink {chem_rates_path}: {e}")
+    
+    target_for_symlink = os.path.join(tmp_dir, 'pdrinpdata', chem_database)
+    
+    # Ensure the target of the symlink actually exists in the temporary directory
+    if not os.path.exists(target_for_symlink):
+        logger.error(f"Target for chem_rates.dat symlink does not exist in temporary directory: {target_for_symlink}")
+        # Log directory contents for debugging
+        if os.path.exists(os.path.dirname(target_for_symlink)):
+            logger.debug(f"Contents of {os.path.dirname(target_for_symlink)}: {os.listdir(os.path.dirname(target_for_symlink))}")
+        raise FileNotFoundError(f"Missing chemical database file in temporary directory for symlink target: {target_for_symlink}")
+
+    os.symlink(target_for_symlink, chem_rates_path)
+    logger.debug(f"Created symlink: {chem_rates_path} -> {target_for_symlink}")
     
     # Set up template files
     _setup_template_files(tmp_dir, pdr_dir, config, json_template)

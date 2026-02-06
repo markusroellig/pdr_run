@@ -70,7 +70,7 @@ from datetime import datetime
 from pdr_run.core.engine import run_model, run_parameter_grid
 from pdr_run.config.default_config import DEFAULT_PARAMETERS
 from pdr_run.config.logging_config import LOGGING_CONFIG
-from pdr_run.utils.logging import sanitize_yaml_content
+from pdr_run.utils.logging import sanitize_yaml_content, sanitize_config
 
 # Configure logging
 logging.config.dictConfig(LOGGING_CONFIG)
