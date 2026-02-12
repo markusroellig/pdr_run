@@ -4,12 +4,12 @@
 
 # Database Configuration
 database:
-  type: sqlite              # 'sqlite' or 'mysql'
+  type: mysql              # 'sqlite' or 'mysql'
   path: ':memory:'          # For SQLite: file path or ':memory:'
   host: localhost           # For MySQL: database host
   port: 3306               # For MySQL: database port
-  database: kosma_tau      # For MySQL: database name
-  username: root           # For MySQL: username
+  database: pdr_test      # For MySQL: database name
+  username: pdr_user           # For MySQL: username
   password: null           # For MySQL: password (use environment variable PDR_DB_PASSWORD)
   pool_recycle: 280        # Connection pool recycle time
   pool_pre_ping: true      # Enable connection health checks
@@ -18,7 +18,7 @@ database:
 # File Storage Configuration
 storage:
   type: local                                    # 'local', 'rclone', 'sftp', 'ftp'
-  base_dir: /home/roellig/pdr/pdr/test_run      # Base directory for storage
+  base_dir: /home/roellig/pdr/pdr/kosma-tau/rundir      # Base directory for storage
   rclone_remote: kosmatau                       # Rclone remote name (if using rclone)
   use_mount: false                              # Use mount functionality
   host: null                                    # For SFTP/FTP: hostname
@@ -30,17 +30,17 @@ storage:
 # PDR Model Configuration
 pdr:
   model_name: test1
-  base_dir: /home/roellig/pdr/pdr/test_run
-  pdr_file_name: mockpdr
-  onion_file_name: mockonion
-  getctrlind_file_name: mockgetctrlind
-  mrt_file_name: mockmrt
+  base_dir: /home/roellig/pdr/pdr/kosma-tau/rundir
+  pdr_file_name: pdrexe
+  onion_file_name: onionexe
+  getctrlind_file_name: getctrlind
+  mrt_file_name: mrt.exe
   pdrinp_template_file: PDRNEW.INP.template
   json_template_file: pdr_config.json.template
-  chem_database: chem_rates_2022-10-21-ERS.dat
-  chem_origin: UDfA12
+  chem_database: chem_rates_udfa22_aggressiveevap.dat
+  chem_origin: UDfA22
   exe_revision: dev
-  compilation_date: '2099-01-01'
+  compilation_date: '2026-02-06'
 
 # User Configuration
 user:
@@ -51,12 +51,12 @@ user:
 model_params:
   # Basic physical parameters
   metal: ["100"]           # Metallicity relative to solar
-  dens: ["30"]            # Log density (cm^-3)
+  dens: ["30","31","32","33","34"]            # Log density (cm^-3)
   mass: ["-10"]           # Log mass (solar masses)
-  chi: ["10"]             # Log UV field strength
+  chi: ["10","11","12","13","14"]             # Log UV field strength
   
   # Cloud structure parameters
-  alpha: 1.5              # Cloud density profile parameter
+  alpha: 0.              # Cloud density profile parameter
   rcore: 0.2              # Core radius parameter
   
   # Species to compute radiative transfer
@@ -65,13 +65,6 @@ model_params:
     - C+
     - C
     - O
-    - 13C+
-    - 13C
-    - 13CO
-    - OH
-    - CH+
-    - HCO+
-    - H13CO+
   
   # Default species for chemistry (as single string)
   default_species: >
@@ -102,9 +95,9 @@ model_params:
 
 # Non-default parameters for advanced users
 non_default_params:
-  ihtclgas: 1              # Gas heating method
+  ihtclgas: 0              # Gas heating method
   tgasc: 50.0              # Gas temperature (K)
-  ihtcldust: 1             # Dust heating method
+  ihtcldust: 0             # Dust heating method
   tdustc: 20               # Dust temperature (K)
   idustmet: 1              # Dust metallicity method
   ih2meth: 0               # H2 formation method

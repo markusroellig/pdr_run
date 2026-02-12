@@ -216,7 +216,7 @@ def get_json_hash(file_path):
     # Return the hexadecimal digest of the SHA-256 hash
     return hashlib.sha256(data).hexdigest()
 
-def register_json_template(name, path, description=None):
+def register_json_template(name, path, description=None, session=None):
     """Register a JSON template in the database.
     
     This function creates a new JSONTemplate record in the database with the 
@@ -227,6 +227,8 @@ def register_json_template(name, path, description=None):
         name (str): Unique identifier/name for the template
         path (str): File system path to the JSON template file
         description (str, optional): Human-readable description of the template
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
     
     Returns:
         JSONTemplate: The newly created database record for the template
@@ -237,31 +239,41 @@ def register_json_template(name, path, description=None):
     # Import the model class locally to avoid circular imports
     from .models import JSONTemplate
     
-    # Get a database session using the helper function
-    session = _get_session()
-    
-    # Create a new template record with the provided information
-    template = JSONTemplate(
-        name=name,
-        path=path,
-        description=description,
-        sha256_sum=get_json_hash(path)  # Calculate SHA-256 hash of template file
-    )
-    
-    # Add the new template to the session and persist to database
-    session.add(template)
+    _session = session
+    session_created_locally = False
+
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"register_json_template: Created local session for template {name}")
+
     try:
-        session.commit()
-        logger.debug(f"Successfully registered JSON template: {name}")
-    except Exception as e:
-        logger.error(f"Failed to register JSON template {name}: {e}")
-        session.rollback()
-        raise
+        # Create a new template record with the provided information
+        template = JSONTemplate(
+            name=name,
+            path=path,
+            description=description,
+            sha256_sum=get_json_hash(path)  # Calculate SHA-256 hash of template file
+        )
+        
+        # Add the new template to the session and persist to database
+        _session.add(template)
+        try:
+            _session.commit()
+            logger.debug(f"Successfully registered JSON template: {name}")
+        except Exception as e:
+            logger.error(f"Failed to register JSON template {name}: {e}")
+            _session.rollback()
+            raise
 
-    # Return the newly created template record
-    return template
+        # Return the newly created template record
+        return template
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"register_json_template: Closed local session for template {name}")
 
-def register_json_file(job_id, name, path, template_id=None):
+def register_json_file(job_id, name, path, template_id=None, session=None):
     """Register a JSON file in the database.
     
     Associates a JSON file with a specific job and optionally with a template.
@@ -273,6 +285,8 @@ def register_json_file(job_id, name, path, template_id=None):
         name (str): Name/identifier for the file
         path (str): Path to the JSON file on disk
         template_id (int, optional): ID of the template this file was created from
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
         
     Returns:
         JSONFile: The created or updated database record
@@ -282,45 +296,56 @@ def register_json_file(job_id, name, path, template_id=None):
     """
     from .models import JSONFile
     
-    session = _get_session()
-    
-    # Calculate hash for deduplication and verification
-    file_hash = get_json_hash(path)
-    
-    # Check if file with same hash exists to avoid duplicates
-    existing = session.query(JSONFile).filter_by(sha256_sum=file_hash).first()
-    if existing:
-        # Update existing record instead of creating a new one
-        existing.name = name
-        existing.path = path
-        existing.job_id = job_id
-        existing.template_id = template_id
-        try:
-            session.commit()
-            logger.debug(f"Updated existing JSON file record: {name} (ID: {existing.id})")
-        except Exception as e:
-            logger.error(f"Failed to update JSON file record {name}: {e}")
-            session.rollback()
-            raise
-        return existing
-    
-    # Create new record if no existing file found
-    json_file = JSONFile(
-        job_id=job_id,
-        name=name,
-        path=path,
-        template_id=template_id,
-        sha256_sum=file_hash
-    )
-    session.add(json_file)
+    _session = session
+    session_created_locally = False
+
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"register_json_file: Created local session for job {job_id}")
+
     try:
-        session.commit()
-        logger.debug(f"Registered new JSON file: {name} (ID: {json_file.id})")
-    except Exception as e:
-        logger.error(f"Failed to register JSON file {name}: {e}")
-        session.rollback()
-        raise
-    return json_file
+        # Calculate hash for deduplication and verification
+        file_hash = get_json_hash(path)
+        
+        # Check if file with same hash exists to avoid duplicates
+        existing = _session.query(JSONFile).filter_by(sha256_sum=file_hash).first()
+        if existing:
+            # Update existing record instead of creating a new one
+            existing.name = name
+            existing.path = path
+            existing.job_id = job_id
+            existing.template_id = template_id
+            try:
+                _session.commit()
+                logger.debug(f"Updated existing JSON file record: {name} (ID: {existing.id})")
+            except Exception as e:
+                logger.error(f"Failed to update JSON file record {name}: {e}")
+                _session.rollback()
+                raise
+            return existing
+        
+        # Create new record if no existing file found
+        json_file = JSONFile(
+            job_id=job_id,
+            name=name,
+            path=path,
+            template_id=template_id,
+            sha256_sum=file_hash
+        )
+        _session.add(json_file)
+        try:
+            _session.commit()
+            logger.debug(f"Registered new JSON file: {name} (ID: {json_file.id})")
+        except Exception as e:
+            logger.error(f"Failed to register JSON file {name}: {e}")
+            _session.rollback()
+            raise
+        return json_file
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"register_json_file: Closed local session for job {job_id}")
 
 def process_json_template(template_path, parameters, output_path=None):
     """Process a JSON template with parameters.
@@ -331,7 +356,7 @@ def process_json_template(template_path, parameters, output_path=None):
     Args:
         template_path (str): Path to the template file
         parameters (dict): Parameter values to substitute
-        output_path (str, optional): Where to save the processed template
+        output_path (str, optional): Where to save the processed file
         
     Returns:
         tuple: (processed_data, output_path)
@@ -342,7 +367,7 @@ def process_json_template(template_path, parameters, output_path=None):
     template = load_json_template(template_path)
     
     # Apply parameters to the template
-    processed = apply_parameters_to_json(template, parameters)
+    processed = apply_parameters_to_json(template, parameters or {})
     
     # Save to file if output path is provided
     if output_path:
@@ -352,7 +377,7 @@ def process_json_template(template_path, parameters, output_path=None):
     # Otherwise just return the processed data
     return processed, None
 
-def prepare_job_json(job_id, template_id=None, parameters=None, tmp_dir=None):
+def prepare_job_json(job_id, template_id=None, parameters=None, tmp_dir=None, session=None):
     """Prepare JSON data for a job.
     
     Selects an appropriate template, processes it with provided parameters,
@@ -363,6 +388,8 @@ def prepare_job_json(job_id, template_id=None, parameters=None, tmp_dir=None):
         template_id (int, optional): Template to use, default if not specified
         parameters (dict, optional): Parameters to apply to the template
         tmp_dir (str, optional): Directory to store the processed file
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
         
     Returns:
         str: Path to the created JSON file
@@ -372,41 +399,52 @@ def prepare_job_json(job_id, template_id=None, parameters=None, tmp_dir=None):
     """
     from .models import JSONTemplate, JSONFile
     
-    session = _get_session()
-    
-    # Get template from database
-    if template_id:
-        # Use the specified template if a template_id is provided
-        template = session.get(JSONTemplate, template_id)  # Modern SQLAlchemy method
-        if not template:
-            raise ValueError(f"Template with ID {template_id} not found")
-    else:
-        # Otherwise use the default template
-        template = session.query(JSONTemplate).filter_by(name="default").first()
-        if not template:
-            raise ValueError("No default template found")
-    
-    # Create temp directory if needed
-    if not tmp_dir:
-        # Create a temporary directory that will be automatically cleaned up
-        tmp_dir = tempfile.mkdtemp()
-    else:
-        # Use the provided directory, creating it if needed
-        os.makedirs(tmp_dir, exist_ok=True)
-    
-    # Generate output path for the processed template
-    output_filename = f"job_{job_id}_config.json"
-    output_path = os.path.join(tmp_dir, output_filename)
-    
-    # Process template with parameters
-    processed, path = process_json_template(template.path, parameters or {}, output_path)
-    
-    # Register the file in the database
-    register_json_file(job_id, output_filename, path, template.id)
-    
-    return path
+    _session = session
+    session_created_locally = False
 
-def archive_job_json(job_id, tmp_json_path, archive_dir):
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"prepare_job_json: Created local session for job {job_id}")
+
+    try:
+        # Get template from database
+        if template_id:
+            # Use the specified template if a template_id is provided
+            template = _session.get(JSONTemplate, template_id)  # Modern SQLAlchemy method
+            if not template:
+                raise ValueError(f"Template with ID {template_id} not found")
+        else:
+            # Otherwise use the default template
+            template = _session.query(JSONTemplate).filter_by(name="default").first()
+            if not template:
+                raise ValueError("No default template found")
+        
+        # Create temp directory if needed
+        if not tmp_dir:
+            # Create a temporary directory that will be automatically cleaned up
+            tmp_dir = tempfile.mkdtemp()
+        else:
+            # Use the provided directory, creating it if needed
+            os.makedirs(tmp_dir, exist_ok=True)
+        
+        # Generate output path for the processed template
+        output_filename = f"job_{job_id}_config.json"
+        output_path = os.path.join(tmp_dir, output_filename)
+        
+        # Process template with parameters
+        processed, path = process_json_template(template.path, parameters or {}, output_path)
+        
+        # Register the file in the database
+        register_json_file(job_id, output_filename, path, template.id, session=_session)
+        
+        return path
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"prepare_job_json: Closed local session for job {job_id}")
+
+def archive_job_json(job_id, tmp_json_path, archive_dir, session=None):
     """Archive JSON data for a job.
     
     Copies a temporary JSON file to a permanent archive location and
@@ -416,36 +454,50 @@ def archive_job_json(job_id, tmp_json_path, archive_dir):
         job_id (int): ID of the job whose JSON to archive
         tmp_json_path (str): Path to the temporary JSON file
         archive_dir (str): Directory where to archive the file
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
         
     Returns:
         str: Path to the archived JSON file
     """
     from .models import JSONFile
     
-    # Create archive directory if it doesn't exist
-    os.makedirs(archive_dir, exist_ok=True)
-    
-    # Determine archive path for the file
-    filename = os.path.basename(tmp_json_path)
-    archive_path = os.path.join(archive_dir, f"job_{job_id}_{filename}")
-    
-    # Copy the file to the archive location
-    copy_json_file(tmp_json_path, archive_path)
-    
-    # Update the database record with the archived path
-    session = _get_session()
-    json_file = session.query(JSONFile).filter_by(job_id=job_id).first()
-    if json_file:
-        json_file.archived_path = archive_path
-        try:
-            session.commit()
-            logger.debug(f"Updated archived path for JSON file (job {job_id}): {archive_path}")
-        except Exception as e:
-            logger.error(f"Failed to update archived path for job {job_id}: {e}")
-            session.rollback()
-            raise
+    _session = session
+    session_created_locally = False
 
-    return archive_path
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"archive_job_json: Created local session for job {job_id}")
+
+    try:
+        # Create archive directory if it doesn't exist
+        os.makedirs(archive_dir, exist_ok=True)
+        
+        # Determine archive path for the file
+        filename = os.path.basename(tmp_json_path)
+        archive_path = os.path.join(archive_dir, f"job_{job_id}_{filename}")
+        
+        # Copy the file to the archive location
+        copy_json_file(tmp_json_path, archive_path)
+        
+        # Update the database record with the archived path
+        json_file = _session.query(JSONFile).filter_by(job_id=job_id).first()
+        if json_file:
+            json_file.archived_path = archive_path
+            try:
+                _session.commit()
+                logger.debug(f"Updated archived path for JSON file (job {job_id}): {archive_path}")
+            except Exception as e:
+                logger.error(f"Failed to update archived path for job {job_id}: {e}")
+                _session.rollback()
+                raise
+
+        return archive_path
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"archive_job_json: Closed local session for job {job_id}")
 
 def validate_json(json_path, schema_path=None):
     """Validate JSON data against a schema.
@@ -471,32 +523,62 @@ def validate_json(json_path, schema_path=None):
         logger.error(f"Invalid JSON in {json_path}")
         return False
 
-def get_json_templates():
+def get_json_templates(session=None):
     """Get all JSON templates from the database.
     
+    Args:
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
+            
     Returns:
         list: List of JSONTemplate objects from the database
     """
     from .models import JSONTemplate
     
-    session = _get_session()
-    return session.query(JSONTemplate).all()
+    _session = session
+    session_created_locally = False
 
-def get_job_json_files(job_id):
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug("get_json_templates: Created local session")
+
+    try:
+        return _session.query(JSONTemplate).all()
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug("get_json_templates: Closed local session")
+
+def get_job_json_files(job_id, session=None):
     """Get JSON files associated with a job.
     
     Args:
         job_id (int): ID of the job to get files for
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
         
     Returns:
         list: List of JSONFile objects associated with the job
     """
     from .models import JSONFile
     
-    session = _get_session()
-    return session.query(JSONFile).filter_by(job_id=job_id).all()
+    _session = session
+    session_created_locally = False
 
-def update_job_output_json(job_id, output_path):
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"get_job_json_files: Created local session for job {job_id}")
+
+    try:
+        return _session.query(JSONFile).filter_by(job_id=job_id).all()
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"get_job_json_files: Closed local session for job {job_id}")
+
+def update_job_output_json(job_id, output_path, session=None):
     """Update job output JSON.
     
     Registers a JSON file as the output for a specific job and
@@ -505,6 +587,8 @@ def update_job_output_json(job_id, output_path):
     Args:
         job_id (int): ID of the job to update
         output_path (str): Path to the output JSON file
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
         
     Returns:
         JSONFile: The registered output file
@@ -514,28 +598,40 @@ def update_job_output_json(job_id, output_path):
     """
     from .models import PDRModelJob
     
-    session = _get_session()
-    job = session.get(PDRModelJob, job_id)  # Modern SQLAlchemy method
-    if not job:
-        raise ValueError(f"Job with ID {job_id} not found")
-    
-    # Register the output file in the database
-    filename = os.path.basename(output_path)
-    json_file = register_json_file(job_id, filename, output_path)
+    _session = session
+    session_created_locally = False
 
-    # Update the job record to point to this output file
-    job.output_json_id = json_file.id
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"update_job_output_json: Created local session for job {job_id}")
+
     try:
-        session.commit()
-        logger.debug(f"Updated job {job_id} with output JSON ID: {json_file.id}")
-    except Exception as e:
-        logger.error(f"Failed to update job {job_id} with output JSON: {e}")
-        session.rollback()
-        raise
+        job = _session.get(PDRModelJob, job_id)  # Modern SQLAlchemy method
+        if not job:
+            raise ValueError(f"Job with ID {job_id} not found")
+        
+        # Register the output file in the database
+        filename = os.path.basename(output_path)
+        json_file = register_json_file(job_id, filename, output_path, session=_session)
 
-    return json_file
+        # Update the job record to point to this output file
+        job.output_json_id = json_file.id
+        try:
+            _session.commit()
+            logger.debug(f"Updated job {job_id} with output JSON ID: {json_file.id}")
+        except Exception as e:
+            logger.error(f"Failed to update job {job_id} with output JSON: {e}")
+            _session.rollback()
+            raise
 
-def initialize_default_templates(template_dir=None):
+        return json_file
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"update_job_output_json: Closed local session for job {job_id}")
+
+def initialize_default_templates(template_dir=None, session=None):
     """Initialize default JSON templates in the database.
     
     Scans the provided template directory (or default templates directory)
@@ -544,6 +640,8 @@ def initialize_default_templates(template_dir=None):
     Args:
         template_dir (str, optional): Directory containing template files
             If None, uses the default templates directory from config
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
             
     Returns:
         list: List of registered template objects
@@ -551,75 +649,89 @@ def initialize_default_templates(template_dir=None):
     from pdr_run.config.default_config import get_config
     import glob
     
-    # Get templates directory from config if not provided
-    if template_dir is None:
-        config = get_config()
-        template_dir = config.get('templates_dir', os.path.join(os.path.dirname(__file__), '../templates'))
-    
-    # Ensure the directory exists
-    if not os.path.exists(template_dir):
-        logger.warning(f"Templates directory {template_dir} does not exist. Creating it.")
-        os.makedirs(template_dir, exist_ok=True)
-        return []
-    
-    # Find all JSON template files in the directory
-    template_files = glob.glob(os.path.join(template_dir, "*.json.template"))
-    if not template_files:
-        logger.warning(f"No template files found in {template_dir}")
-        return []
-    
-    # Register each template
-    registered_templates = []
-    session = _get_session()
-    
-    for template_path in template_files:
-        template_name = os.path.basename(template_path).replace(".json.template", "")
-        
-        # Check if template with this hash already exists
-        template_hash = get_json_hash(template_path)
-        existing = session.query(JSONTemplate).filter_by(sha256_sum=template_hash).first()
-        
-        if existing:
-            logger.info(f"Template {template_name} already registered with hash {template_hash[:8]}...")
-            registered_templates.append(existing)
-            continue
-            
-        # Create a short description from the first few lines
-        description = None
-        try:
-            with open(template_path, 'r') as f:
-                content = f.read(1000)  # Read first 1000 chars
-                # If there's a comment at the top, use it as description
-                if content.strip().startswith(('/*', '//', '#')):
-                    description = content.split('\n', 1)[0].strip('/* \t\n')
-        except Exception as e:
-            logger.warning(f"Couldn't read template {template_path}: {e}")
-            
-        # Register the template
-        template = register_json_template(
-            name=template_name,
-            path=template_path,
-            description=description
-        )
-        registered_templates.append(template)
-        logger.info(f"Registered template {template_name} from {template_path}")
-    
-    # Create a default template if none exists
-    if not session.query(JSONTemplate).filter_by(name="default").first():
-        # If we have any templates, set the first one as default
-        if registered_templates:
-            default = registered_templates[0]
-            default_copy = register_json_template(
-                name="default",
-                path=default.path,
-                description=f"Default template (copy of {default.name})"
-            )
-            logger.info(f"Created default template based on {default.name}")
-            registered_templates.append(default_copy)
-            
-    return registered_templates
+    _session = session
+    session_created_locally = False
 
-def update_json_template(template_id, name=None, path=None, description=None):
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug("initialize_default_templates: Created local session")
+
+    try:
+        # Get templates directory from config if not provided
+        if template_dir is None:
+            config = get_config()
+            template_dir = config.get('templates_dir', os.path.join(os.path.dirname(__file__), '../templates'))
+        
+        # Ensure the directory exists
+        if not os.path.exists(template_dir):
+            logger.warning(f"Templates directory {template_dir} does not exist. Creating it.")
+            os.makedirs(template_dir, exist_ok=True)
+            return []
+        
+        # Find all JSON template files in the directory
+        template_files = glob.glob(os.path.join(template_dir, "*.json.template"))
+        if not template_files:
+            logger.warning(f"No template files found in {template_dir}")
+            return []
+        
+        # Register each template
+        registered_templates = []
+        
+        for template_path in template_files:
+            template_name = os.path.basename(template_path).replace(".json.template", "")
+            
+            # Check if template with this hash already exists
+            template_hash = get_json_hash(template_path)
+            existing = _session.query(JSONTemplate).filter_by(sha256_sum=template_hash).first()
+            
+            if existing:
+                logger.info(f"Template {template_name} already registered with hash {template_hash[:8]}...")
+                registered_templates.append(existing)
+                continue
+                
+            # Create a short description from the first few lines
+            description = None
+            try:
+                with open(template_path, 'r') as f:
+                    content = f.read(1000)  # Read first 1000 chars
+                    # If there's a comment at the top, use it as description
+                    if content.strip().startswith(('/*', '//', '#')):
+                        description = content.split('\n', 1)[0].strip('/* \t\n')
+            except Exception as e:
+                logger.warning(f"Couldn't read template {template_path}: {e}")
+                
+            # Register the template
+            template = register_json_template(
+                name=template_name,
+                path=template_path,
+                description=description,
+                session=_session
+            )
+            registered_templates.append(template)
+            logger.info(f"Registered template {template_name} from {template_path}")
+        
+        # Create a default template if none exists
+        if not _session.query(JSONTemplate).filter_by(name="default").first():
+            # If we have any templates, set the first one as default
+            if registered_templates:
+                default = registered_templates[0]
+                default_copy = register_json_template(
+                    name="default",
+                    path=default.path,
+                    description=f"Default template (copy of {default.name})",
+                    session=_session
+                )
+                logger.info(f"Created default template based on {default.name}")
+                registered_templates.append(default_copy)
+                
+        return registered_templates
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug("initialize_default_templates: Closed local session")
+
+def update_json_template(template_id, name=None, path=None, description=None, session=None):
     """Update an existing JSON template in the database.
     
     Args:
@@ -627,7 +739,9 @@ def update_json_template(template_id, name=None, path=None, description=None):
         name (str, optional): New name for the template
         path (str, optional): New path for the template file
         description (str, optional): New description for the template
-        
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
+            
     Returns:
         JSONTemplate: The updated template object, or None if not found
         
@@ -635,39 +749,52 @@ def update_json_template(template_id, name=None, path=None, description=None):
         ValueError: If the template doesn't exist
     """
     from .models import JSONTemplate
-    session = _get_session()
-    
-    template = session.get(JSONTemplate, template_id)
-    if not template:
-        raise ValueError(f"Template with ID {template_id} not found")
-    
-    # Update fields if provided
-    if name:
-        template.name = name
-    if path:
-        template.path = path
-        # Update hash if path changed
-        template.sha256_sum = get_json_hash(path)
-    if description:
-        template.description = description
+    _session = session
+    session_created_locally = False
+
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"update_json_template: Created local session for template {template_id}")
 
     try:
-        session.commit()
-        logger.debug(f"Updated JSON template {template_id}: {name or template.name}")
-    except Exception as e:
-        logger.error(f"Failed to update JSON template {template_id}: {e}")
-        session.rollback()
-        raise
+        template = _session.get(JSONTemplate, template_id)
+        if not template:
+            raise ValueError(f"Template with ID {template_id} not found")
+        
+        # Update fields if provided
+        if name:
+            template.name = name
+        if path:
+            template.path = path
+            # Update hash if path changed
+            template.sha256_sum = get_json_hash(path)
+        if description:
+            template.description = description
 
-    return template
+        try:
+            _session.commit()
+            logger.debug(f"Updated JSON template {template_id}: {name or template.name}")
+        except Exception as e:
+            logger.error(f"Failed to update JSON template {template_id}: {e}")
+            _session.rollback()
+            raise
 
-def delete_json_template(template_id, force=False):
+        return template
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"update_json_template: Closed local session for template {template_id}")
+
+def delete_json_template(template_id, force=False, session=None):
     """Delete a JSON template from the database.
     
     Args:
         template_id (int): ID of the template to delete
         force (bool, optional): If True, delete even if template has instances
             Default is False, which raises an error if template has instances
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
             
     Returns:
         bool: True if deleted successfully
@@ -676,95 +803,152 @@ def delete_json_template(template_id, force=False):
         ValueError: If the template doesn't exist or has instances and force=False
     """
     from .models import JSONTemplate
-    session = _get_session()
-    
-    template = session.get(JSONTemplate, template_id)
-    if not template:
-        raise ValueError(f"Template with ID {template_id} not found")
-    
-    # Check if template has instances
-    if not force and template.instances:
-        raise ValueError(
-            f"Template {template.name} has {len(template.instances)} instances. "
-            f"Use force=True to delete anyway."
-        )
-    
-    # If force is True and template has instances, update them to no longer
-    # reference this template
-    if force and template.instances:
-        for instance in template.instances:
-            instance.template_id = None
-        try:
-            session.commit()
-            logger.debug(f"Unlinked {len(template.instances)} instances from template {template_id}")
-        except Exception as e:
-            logger.error(f"Failed to unlink instances from template {template_id}: {e}")
-            session.rollback()
-            raise
+    _session = session
+    session_created_locally = False
 
-    # Delete the template
-    session.delete(template)
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug(f"delete_json_template: Created local session for template {template_id}")
+
     try:
-        session.commit()
-        logger.debug(f"Deleted JSON template {template_id}")
-    except Exception as e:
-        logger.error(f"Failed to delete JSON template {template_id}: {e}")
-        session.rollback()
-        raise
-    return True
+        template = _session.get(JSONTemplate, template_id)
+        if not template:
+            raise ValueError(f"Template with ID {template_id} not found")
+        
+        # Check if template has instances
+        if not force and template.instances:
+            raise ValueError(
+                f"Template {template.name} has {len(template.instances)} instances. "
+                f"Use force=True to delete anyway."
+            )
+        
+        # If force is True and template has instances, update them to no longer
+        # reference this template
+        if force and template.instances:
+            for instance in template.instances:
+                instance.template_id = None
+            try:
+                _session.commit()
+                logger.debug(f"Unlinked {len(template.instances)} instances from template {template_id}")
+            except Exception as e:
+                logger.error(f"Failed to unlink instances from template {template_id}: {e}")
+                _session.rollback()
+                raise
 
-def get_all_json_files():
+        # Delete the template
+        _session.delete(template)
+        try:
+            _session.commit()
+            logger.debug(f"Deleted JSON template {template_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete JSON template {template_id}: {e}")
+            _session.rollback()
+            raise
+        return True
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"delete_json_template: Closed local session for template {template_id}")
+
+def get_all_json_files(session=None):
     """Get all JSON files from the database.
     
+    Args:
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
+            
     Returns:
         list: List of JSONFile objects from the database
     """
     from .models import JSONFile
-    session = _get_session()
-    return session.query(JSONFile).all()
+    _session = session
+    session_created_locally = False
 
-def find_orphaned_json_files():
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug("get_all_json_files: Created local session")
+
+    try:
+        return _session.query(JSONFile).all()
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug("get_all_json_files: Closed local session")
+
+def find_orphaned_json_files(session=None):
     """Find JSON files in the database that no longer exist on disk.
     
+    Args:
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
+            
     Returns:
         list: List of JSONFile objects that don't exist on disk
     """
     from .models import JSONFile
-    session = _get_session()
-    all_files = session.query(JSONFile).all()
-    
-    orphaned = []
-    for json_file in all_files:
-        if not os.path.exists(json_file.path) and (
-            json_file.archived_path is None or not os.path.exists(json_file.archived_path)
-        ):
-            orphaned.append(json_file)
-            
-    return orphaned
+    _session = session
+    session_created_locally = False
 
-def cleanup_orphaned_json_files(delete=False):
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug("find_orphaned_json_files: Created local session")
+
+    try:
+        all_files = _session.query(JSONFile).all()
+        
+        orphaned = []
+        for json_file in all_files:
+            if not os.path.exists(json_file.path) and (
+                json_file.archived_path is None or not os.path.exists(json_file.archived_path)
+            ):
+                orphaned.append(json_file)
+                
+        return orphaned
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug("find_orphaned_json_files: Closed local session")
+
+def cleanup_orphaned_json_files(delete=False, session=None):
     """Find and optionally delete orphaned JSON files from the database.
     
     Args:
         delete (bool): If True, delete orphaned files from database
             If False, just return the list without deleting
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+            new session will be created and closed. Defaults to None.
             
     Returns:
         list: List of orphaned JSON file objects
     """
-    orphaned = find_orphaned_json_files()
-    
-    if delete and orphaned:
-        session = _get_session()
-        for json_file in orphaned:
-            logger.info(f"Deleting orphaned JSON file: {json_file.name} (ID: {json_file.id})")
-            session.delete(json_file)
-        try:
-            session.commit()
-            logger.debug(f"Successfully deleted {len(orphaned)} orphaned JSON files")
-        except Exception as e:
-            logger.error(f"Failed to delete orphaned JSON files: {e}")
-            session.rollback()
-            raise
+    _session = session
+    session_created_locally = False
 
-    return orphaned
+    if _session is None:
+        _session = _get_session()
+        session_created_locally = True
+        logger.debug("cleanup_orphaned_json_files: Created local session")
+
+    try:
+        orphaned = find_orphaned_json_files(session=_session) # Pass session
+        
+        if delete and orphaned:
+            for json_file in orphaned:
+                logger.info(f"Deleting orphaned JSON file: {json_file.name} (ID: {json_file.id})")
+                _session.delete(json_file)
+            try:
+                _session.commit()
+                logger.debug(f"Successfully deleted {len(orphaned)} orphaned JSON files")
+            except Exception as e:
+                logger.error(f"Failed to delete orphaned JSON files: {e}")
+                _session.rollback()
+                raise
+
+        return orphaned
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug("cleanup_orphaned_json_files: Closed local session")
