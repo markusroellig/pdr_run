@@ -147,38 +147,31 @@ def open_template(template_name):
     """Open a template file and return its contents.
     
     Args:
-        template_name: Name of the template file
+        template_name (str): Name or path of the template file
         
     Returns:
         String containing the template content
+        
+    Raises:
+        FileNotFoundError: If the template file cannot be located
     """
     logger.info(f"Looking for template file: '{template_name}'")
     logger.debug(f"Current working directory: {os.getcwd()}")
     
-    # Keep track of all attempted paths for error reporting
+    # Define search paths: current directory first, then PDR_INP_DIRS
+    search_dirs = ['.']
+    if isinstance(PDR_INP_DIRS, list):
+        search_dirs.extend(PDR_INP_DIRS)
+    elif isinstance(PDR_INP_DIRS, str):
+        search_dirs.append(PDR_INP_DIRS) # Fallback if PDR_INP_DIRS was accidentally a string
+    
     attempted_paths = []
     
-    # Find the template in the PDR_INP_DIRS locations
-    if isinstance(PDR_INP_DIRS, list):
-        # Try all possible locations
-        logger.debug(f"Searching across {len(PDR_INP_DIRS)} potential template directories")
-        for dir_path in PDR_INP_DIRS:
-            template_path = os.path.join(dir_path, template_name)
-            attempted_paths.append(template_path)
-            logger.debug(f"Trying path: {template_path}")
-            
-            if os.path.exists(template_path):
-                logger.info(f"Template found at: {template_path}")
-                with open(template_path, "r") as f:
-                    content = f.read()
-                logger.debug(f"Successfully read template ({len(content)} bytes)")
-                return content
-    else:
-        # If it's a string, just try that path
-        #template_path = os.path.join(PDR_INP_DIRS, "templates", template_name)
-        template_path = template_name
+    for base_dir in search_dirs:
+        # Construct the full path
+        template_path = os.path.join(base_dir, template_name)
         attempted_paths.append(template_path)
-        logger.debug(f"Trying single path: {template_path}")
+        logger.debug(f"Trying path: {template_path}")
         
         if os.path.exists(template_path):
             logger.info(f"Template found at: {template_path}")
@@ -186,11 +179,9 @@ def open_template(template_name):
                 content = f.read()
             logger.debug(f"Successfully read template ({len(content)} bytes)")
             return content
-        else:
-            logger.debug(f"Template not found at: {template_path}")
     
     # If we get here, we couldn't find the template
-    error_msg = f"Template file '{template_name}' not found in any template directory. Attempted paths: {attempted_paths}"
+    error_msg = f"Template file '{template_name}' not found. Attempted paths: {attempted_paths}"
     logger.error(error_msg)
     raise FileNotFoundError(error_msg)
 
@@ -326,7 +317,7 @@ def create_pdrnew_from_job_id(job_id, session=None, return_content=False):
             _session.close()
             logger.debug(f"create_pdrnew_from_job_id: Closed local session for job {job_id}")
 
-def create_json_from_job_id(job_id, session=None, return_content=False):
+def create_json_from_job_id(job_id, session=None, return_content=False, config=None):
     """Create a pdr_config.json input file for the KOSMA-tau PDR model from a database job ID.
     
     This function retrieves a PDR model job by its ID and generates a JSON config file
@@ -351,6 +342,8 @@ def create_json_from_job_id(job_id, session=None, return_content=False):
             new session will be created. Defaults to None.
         return_content (bool, optional): Whether to return the generated file content
             in addition to writing the file. Defaults to False.
+        config (dict, optional): Configuration dictionary to retrieve json_template_file.
+            Defaults to None.
             
     Returns:
         str or None: If return_content is True, returns the complete content of the 
@@ -391,11 +384,18 @@ def create_json_from_job_id(job_id, session=None, return_content=False):
             logger.error(f"ChemicalDatabase not found for job {job_id}, ID: {job.chemical_database_id}")
             raise ValueError(f"ChemicalDatabase not found for job {job_id}")
         
+        # Determine which JSON template file to use
+        json_template_file_name = PDR_CONFIG['json_template_file']
+        if config and 'pdr' in config and 'json_template_file' in config['pdr']:
+            json_template_file_name = config['pdr']['json_template_file']
+        
+        logger.debug(f"Using JSON template file: {json_template_file_name}")
+
         # Get the template content
         try:
-            template_content = open_template("pdr_config.json.template")
+            template_content = open_template(json_template_file_name)
         except FileNotFoundError:
-            logger.warning("pdr_config.json.template not found. Skipping JSON creation.")
+            logger.warning(f"{json_template_file_name} not found. Skipping JSON creation.")
             if return_content:
                 return ""
             return None
@@ -1022,7 +1022,7 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
         storage = get_storage_backend(config)
         
         # Primary workflow: Create JSON config (always)
-        create_json_from_job_id(job_id, session=_session) # Pass session
+        create_json_from_job_id(job_id, session=_session, config=config) # Pass session and config
         
         # Legacy support: Create PDRNEW.INP only if template exists
         try:
