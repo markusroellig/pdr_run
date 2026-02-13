@@ -37,6 +37,8 @@
 
   "scattering_method": KT_VARiscatter_,              // Choose method of scattering treatment xkscat(:=1=>albedo=0; :=-1=>kscat computed) ISCATTER
 
+  "chemical_database_file": "KT_VARCHEM_DATABASE_FILE_",    // chemical database file from pdrinpdata
+
   "output_file": "output.dat",          // Name of the output file
 
   "temperature": {
