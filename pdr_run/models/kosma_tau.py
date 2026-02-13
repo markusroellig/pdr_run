@@ -21,7 +21,7 @@ from pdr_run.database import get_db_manager
 
 # Removed the direct import of get_session, as it is replaced by get_db_manager().get_session()
 from pdr_run.database.models import (
-    PDRModelJob, HDFFile, KOSMAtauParameters
+    PDRModelJob, HDFFile, KOSMAtauParameters, ChemicalDatabase
 )
 from pdr_run.models.parameters import (
     compute_radius, from_string_to_par, from_par_to_string,
@@ -384,6 +384,12 @@ def create_json_from_job_id(job_id, session=None, return_content=False):
     try:
         job = _session.get(PDRModelJob, job_id)
         model_params = _session.get(KOSMAtauParameters, job.kosmatau_parameters_id)
+
+        # Retrieve ChemicalDatabase object
+        chemical_database = _session.get(ChemicalDatabase, job.chemical_database_id)
+        if not chemical_database:
+            logger.error(f"ChemicalDatabase not found for job {job_id}, ID: {job.chemical_database_id}")
+            raise ValueError(f"ChemicalDatabase not found for job {job_id}")
         
         # Get the template content
         try:
@@ -394,8 +400,13 @@ def create_json_from_job_id(job_id, session=None, return_content=False):
                 return ""
             return None
         
-        # Transform parameters directly from model_params
-        transformed_params = transform(model_params.__dict__)
+        # Combine model parameters and chemical database file name for substitution
+        substitution_params = model_params.__dict__.copy()
+        # Add the chemical database file name with a clear placeholder name
+        substitution_params['CHEM_DATABASE_FILE'] = chemical_database.chem_rates_file_name
+
+        # Transform combined parameters
+        transformed_params = transform(substitution_params)
         
         # Filter out SQLAlchemy internal attributes
         transformed_params = {k: v for k, v in transformed_params.items() 
