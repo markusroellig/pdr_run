@@ -68,7 +68,10 @@ import traceback  # Add this import
 from datetime import datetime
 
 from pdr_run.core.engine import run_model, run_parameter_grid
-from pdr_run.config.default_config import DEFAULT_PARAMETERS
+from pdr_run.config.default_config import (
+    DEFAULT_PARAMETERS, non_default_parameters,
+    DATABASE_CONFIG, STORAGE_CONFIG, PDR_CONFIG, USER_CONFIG
+)
 from pdr_run.config.logging_config import LOGGING_CONFIG
 from pdr_run.utils.logging import sanitize_yaml_content, sanitize_config
 
@@ -208,27 +211,53 @@ def load_config(config_file):
         logger.error(f"Error loading config file: {e}", exc_info=True)
         return None
 
-def configure_from_args(args, config=None):
-    """Configure environment from command-line arguments."""
-    # Set environment variables based on args
-    if hasattr(args, 'storage_type') and args.storage_type:
-        os.environ['PDR_STORAGE_TYPE'] = args.storage_type
-    if hasattr(args, 'storage_dir') and args.storage_dir:
-        os.environ['PDR_STORAGE_DIR'] = args.storage_dir
-    if hasattr(args, 'db_type') and args.db_type:
-        os.environ['PDR_DB_TYPE'] = args.db_type
-    if hasattr(args, 'db_file') and args.db_file:
-        os.environ['PDR_DB_FILE'] = args.db_file
-    if hasattr(args, 'db_password') and args.db_password:
-        os.environ['PDR_DB_PASSWORD'] = args.db_password
+# Define aliases for backward compatibility
+SECTION_NAME_ALIASES = {
+    'model_params': 'model_parameters',
+    'non_default_params': 'non_default_parameters'
+}
+
+# Define a comprehensive valid configuration structure for validation
+VALID_CONFIG_STRUCTURE = {
+    'database': set(DATABASE_CONFIG.keys()),
+    'storage': set(STORAGE_CONFIG.keys()),
+    'pdr': set(PDR_CONFIG.keys()),
+    'user': set(USER_CONFIG.keys()),
+    'model_parameters': set(DEFAULT_PARAMETERS.keys()), # Canonical name
+    'non_default_parameters': set(non_default_parameters.keys()), # Canonical name
+    'directories': {'pdr_out_dirs', 'pdr_inp_dirs'} # Assuming 'directories' is a valid top-level section
+}
+
+def validate_config(config_to_validate):
+    """
+    Validate the loaded configuration dictionary against a predefined structure.
+    Logs critical errors and aborts if any unknown parameters are found.
+    Handles section name aliases for backward compatibility.
+    """
+    logger.info("Starting configuration validation...")
     
-    # # Update config from environment variables
-    # db_password_env = os.environ.get('PDR_DB_PASSWORD')
-    # if db_password_env:
-    #     config['database']['password'] = db_password_env
-    
-    # Return config dict for compatibility
-    return {}
+    # Validate top-level sections
+    for section_name in config_to_validate.keys():
+        canonical_section_name = SECTION_NAME_ALIASES.get(section_name, section_name)
+
+        if canonical_section_name not in VALID_CONFIG_STRUCTURE:
+            logger.critical(f"Unknown top-level section '{section_name}' found in configuration. Aborting.")
+            sys.exit(1)
+        
+        # Validate parameters within each known section (using canonical name for structure lookup)
+        if isinstance(config_to_validate[section_name], dict):
+            for param_name in config_to_validate[section_name].keys():
+                if param_name not in VALID_CONFIG_STRUCTURE[canonical_section_name]:
+                    logger.critical(f"Unknown parameter '{param_name}' found in section '{section_name}'. Aborting.")
+                    sys.exit(1)
+        elif isinstance(config_to_validate[section_name], list):
+            # For list-based sections (like directories.pdr_out_dirs), no further key validation
+            pass
+        else:
+            # Handle other types if necessary, or just skip if they are not expected to contain parameters
+            pass
+            
+    logger.info("Configuration validated successfully.")
 
 def print_configuration(params, model_name, config, parallel=False, n_workers=None):
     """Print the full configuration that would be used for a run.
@@ -316,7 +345,11 @@ def main():
     if db_password_env:
         logger.info("Found PDR_DB_PASSWORD in environment, using it for database configuration")
         config['database']['password'] = db_password_env
-    
+
+    # Validate the loaded configuration thoroughly
+    if config:
+        validate_config(config) # This will abort if any unknown params are found
+
     # ===== MODEL NAME PRECEDENCE LOGIC =====
     # Priority: 1. Command line, 2. Config file, 3. Default
     model_name = None
@@ -342,23 +375,41 @@ def main():
     args.model_name = model_name
     logger.info(f"Model name: '{model_name}' (source: {model_name_source})")
     
-    # Prepare parameters
+    # Prepare parameters: start with defaults, then apply config file overrides
+    # All parameters in config are guaranteed to be valid due to validate_config call
     params = DEFAULT_PARAMETERS.copy()
-    logger.debug(f"Default parameters: {params}")
-    
+    params.update(non_default_parameters) # Add all known non_default_parameters
+
+    logger.debug(f"Combined default and non-default parameters for initial params: {params}")
+
     # Track parameter sources for debugging
     param_sources = {key: "default" for key in params.keys()}
+
+    # Apply config file parameters for model_params/model_parameters
+    model_params_data = {}
+    if config and 'model_params' in config: # Alias
+        model_params_data.update(config['model_params'])
+    if config and 'model_parameters' in config: # Canonical (takes precedence)
+        model_params_data.update(config['model_parameters'])
     
-    # Override with config file parameters first (lower priority)
-    if config and 'model_params' in config:
-        logger.info("Applying model parameters from configuration file")
-        for key, value in config['model_params'].items():
-            if key in params:
-                logger.info(f"Overriding parameter '{key}' with config value: {value}")
-                params[key] = value
-                param_sources[key] = "config-file"
-            else:
-                logger.warning(f"Unknown parameter '{key}' in configuration file")
+    if model_params_data:
+        for key, value in model_params_data.items():
+            params[key] = value
+            param_sources[key] = "config-file"
+        logger.info(f"Applied {len(model_params_data)} parameters from 'model_params'/'model_parameters' section of config file.")
+
+    # Apply config file parameters for non_default_params/non_default_parameters
+    non_default_params_data = {}
+    if config and 'non_default_params' in config: # Alias
+        non_default_params_data.update(config['non_default_params'])
+    if config and 'non_default_parameters' in config: # Canonical (takes precedence)
+        non_default_params_data.update(config['non_default_parameters'])
+    
+    if non_default_params_data:
+        for key, value in non_default_params_data.items():
+            params[key] = value
+            param_sources[key] = "config-file"
+        logger.info(f"Applied {len(non_default_params_data)} parameters from 'non_default_params'/'non_default_parameters' section of config file.")
     
     # Override with command-line arguments (highest priority)
     for param in ['metal', 'dens', 'mass', 'chi', 'species']:

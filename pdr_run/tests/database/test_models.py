@@ -420,8 +420,8 @@ class TestModelValidationAndConstraints:
         )
         self.session.add(job)
         
-        # SQLite raises OperationalError for foreign key violations
-        with pytest.raises(OperationalError) as exc_info:
+        # SQLite raises IntegrityError for foreign key violations
+        with pytest.raises(IntegrityError) as exc_info:
             self.session.commit()
         
         # Verify it's the expected foreign key error

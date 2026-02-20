@@ -3,6 +3,7 @@
 import os
 import pytest
 from unittest.mock import patch, MagicMock
+import tempfile # Added this import
 
 from pdr_run.core.engine import run_model, run_parameter_grid, _calculate_cpu_count
 
@@ -33,49 +34,57 @@ def test_run_single_model(mock_model_runner, mock_env_config, monkeypatch):
         result = run_model(model_name="test_model", params={
             "dens": ["3.5"],
             "chi": ["2.0"],
-            "mass": ["1.0"],   # Missing required parameter
-            "metal": ["1.0"],  # Missing required parameter
-            "col": ["0.0"]    # Missing required parameter
+            "mass": ["1.0"],
+            "metal": ["1.0"],
+            #"col": ["0.0"] # Removed as 'col' is not in default_parameters anymore.
         })
         
         assert result == 'test_job_123'
 
 def test_run_parameter_grid(mock_model_runner, mock_env_config, db_session):  # Add db_session
     """Test running a grid of PDR models."""
-    grid_params = {
-        "model_name": "test_grid", 
-        "params": {
-            "dens": ["3.0", "3.5", "4.0"],
-            "chi": ["1.0", "2.0"],
-            "mass": ["1.0"],
-            "metal": ["1.0"],
-            "col": ["0.0"]
-        },
-        "parallel": False
-    }
-    
-    # Create expected job IDs for the 6 combinations
-    expected_job_ids = [f'test_job_{i}' for i in range(6)]
-    
- 
-    # Patch all the database and execution functions
-    with patch('pdr_run.core.engine.run_kosma_tau', return_value={'success': True}), \
-         patch('pdr_run.core.engine.create_database_entries', return_value=({}, expected_job_ids)), \
-         patch('pdr_run.core.engine.multiprocessing.Pool') as mock_pool, \
-         patch('pdr_run.database.queries.get_session', return_value=db_session):  # Use the db_session fixture
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_pdr_base_dir = os.path.join(tmpdir, "test_pdr_base")
+        os.makedirs(test_pdr_base_dir, exist_ok=True)
 
-        mock_pool_instance = MagicMock()
-        mock_pool.return_value.__enter__.return_value = mock_pool_instance
-
-        # Configure mock pool to return the same job IDs
-        mock_pool_instance.starmap.return_value = expected_job_ids
-
-        # Run parameter grid
-        results = run_parameter_grid(**grid_params)
+        grid_params = {
+            "model_name": "test_grid", 
+            "params": {
+                "dens": ["3.0", "3.5", "4.0"],
+                "chi": ["1.0", "2.0"],
+                "mass": ["1.0"],
+                "metal": ["1.0"],
+                #"col": ["0.0"] # Removed as 'col' is not in default_parameters anymore.
+            },
+            "parallel": False,
+            "config": { # Provide a config that points to our temporary PDR base dir
+                "pdr": {
+                    "base_dir": test_pdr_base_dir
+                }
+            }
+        }
         
-        # Verify results
-        assert len(results) == 6  # 3 densities × 2 chi values
-        assert results == expected_job_ids
+        # Create expected job IDs for the 6 combinations
+        expected_job_ids = [f'test_job_{i}' for i in range(6)]
+        
+        # Patch all the database and execution functions
+        with patch('pdr_run.core.engine.run_kosma_tau', return_value={'success': True}), \
+             patch('pdr_run.core.engine.create_database_entries', return_value=({}, expected_job_ids)), \
+             patch('pdr_run.core.engine.multiprocessing.Pool') as mock_pool, \
+             patch('pdr_run.database.queries.get_session', return_value=db_session):  # Use the db_session fixture
+
+            mock_pool_instance = MagicMock()
+            mock_pool.return_value.__enter__.return_value = mock_pool_instance
+
+            # Configure mock pool to return the same job IDs
+            mock_pool_instance.starmap.return_value = expected_job_ids
+
+            # Run parameter grid
+            results = run_parameter_grid(**grid_params)
+            
+            # Verify results
+            assert len(results) == 6  # 3 densities × 2 chi values
+            assert results == expected_job_ids
 
 def test_cpu_calculation():
     """Test automatic CPU calculation."""

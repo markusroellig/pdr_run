@@ -382,8 +382,8 @@ class RCloneStorage(Storage):
             full_path = os.path.join(self.remote_base_path, clean_remote_path).replace('\\', '/')
             return f"{self.remote_name}:{full_path}"
         else:
-            # No base path - ensure path starts with / for consistency
-            if not clean_remote_path.startswith('/'):
+            # No base path - for consistency, ensure path starts with '/' if not empty
+            if clean_remote_path: # Only prepend '/' if there is actually a path
                 clean_remote_path = '/' + clean_remote_path
             return f"{self.remote_name}:{clean_remote_path}"
     

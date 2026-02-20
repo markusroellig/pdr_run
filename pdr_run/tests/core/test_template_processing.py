@@ -13,7 +13,7 @@ from pdr_run.models.kosma_tau import create_pdrnew_from_job_id, transform
 
 
 # Apply additional mocks to completely isolate database access
-@mock.patch('pdr_run.models.kosma_tau.get_session')
+@mock.patch('pdr_run.models.kosma_tau.get_db_manager')
 @mock.patch('pdr_run.database.models.KOSMAtauParameters.model_name')
 @mock.patch('pdr_run.database.models.KOSMAtauParameters.model_name_id', new_callable=mock.PropertyMock)
 class TestTemplateReplacement(unittest.TestCase):
@@ -64,8 +64,11 @@ class TestTemplateReplacement(unittest.TestCase):
         os.chdir(self.old_dir)
         shutil.rmtree(self.test_dir)
 
-    def test_transform_function(self, mock_get_session, mock_model_name_id, mock_model_name):
+    def test_transform_function(self, mock_get_db_manager, mock_model_name_id, mock_model_name):
         """Test the transform function."""
+        # Configure mock_get_db_manager if needed, though this test doesn't use it directly
+        mock_get_db_manager.return_value.get_session.return_value = mock.MagicMock()
+
         test_dict = {
             'xnsur': 1.0e3,
             'mass': 10,
@@ -85,11 +88,11 @@ class TestTemplateReplacement(unittest.TestCase):
 
     @mock.patch('pdr_run.models.kosma_tau.PDR_INP_DIRS', new='')
     @mock.patch('pdr_run.models.kosma_tau.open_template')
-    def test_pdrnew_creation(self, mock_open_template, mock_get_session, mock_model_name_id, mock_model_name):
+    def test_pdrnew_creation(self, mock_open_template, mock_get_db_manager, mock_model_name_id, mock_model_name):
         """Test creation of PDRNEW.INP file from a template."""
         # Set up mock session to avoid any actual database calls
         mock_session = mock.MagicMock()
-        mock_get_session.return_value = mock_session
+        mock_get_db_manager.return_value.get_session.return_value = mock_session
 
         # Use the actual template file copied during setUp
         mock_open_template.return_value = open("PDRNEW.INP.template", "r").read()
@@ -138,11 +141,11 @@ class TestTemplateReplacement(unittest.TestCase):
 
     @mock.patch('pdr_run.models.kosma_tau.PDR_INP_DIRS', new='')  # Mock PDR_INP_DIRS as a string
     @mock.patch('pdr_run.models.kosma_tau.open_template')
-    def test_pdrnew_content_display(self, mock_open_template, mock_get_session, mock_model_name_id, mock_model_name):
+    def test_pdrnew_content_display(self, mock_open_template, mock_get_db_manager, mock_model_name_id, mock_model_name):
         """Test and display PDRNEW.INP file content."""
         # Set up mock objects - same as in test_pdrnew_creation
         mock_session = mock.MagicMock()
-        mock_get_session.return_value = mock_session
+        mock_get_db_manager.return_value.get_session.return_value = mock_session
 
         with open("PDRNEW.INP.template", "r") as f:
             template_content = f.read()
@@ -191,14 +194,14 @@ class TestTemplateReplacement(unittest.TestCase):
             print("Using simple fallback template - skipping detailed content checks")
             # The basic assertions above are sufficient for the simple template
 
-    @mock.patch('pdr_run.models.kosma_tau.get_session')
+    @mock.patch('pdr_run.models.kosma_tau.get_db_manager')
     @mock.patch('pdr_run.database.models.KOSMAtauParameters.model_name')
     @mock.patch('pdr_run.database.models.KOSMAtauParameters.model_name_id', new_callable=mock.PropertyMock)
-    def test_real_template_pdrnew_creation(self, mock_model_name_id, mock_model_name, mock_get_session, *extra_mocks):
+    def test_real_template_pdrnew_creation(self, mock_model_name_id, mock_model_name, mock_get_db_manager, *extra_mocks):
         """Test creating PDRNEW.INP with the real template file."""
         # Set up mock objects for database interaction
         mock_session = mock.MagicMock()
-        mock_get_session.return_value = mock_session
+        mock_get_db_manager.return_value.get_session.return_value = mock_session
 
         mock_job = mock.MagicMock(spec=PDRModelJob)
         mock_job.model_job_name = "test_model"

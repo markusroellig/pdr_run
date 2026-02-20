@@ -226,7 +226,8 @@ class TestDatabaseIntegration(unittest.TestCase):
         self.assertEqual(retrieved_params[0], 1.0e3)  # Check xnsur value
         
         # 9. Test template replacement function with the job - mock it to avoid ORM issues
-        with mock.patch('pdr_run.models.kosma_tau.get_session', return_value=self.session):
+        with mock.patch('pdr_run.models.kosma_tau.get_db_manager') as mock_get_db_manager:
+            mock_get_db_manager.return_value.get_session.return_value = self.session
             # Dynamically check if the 'grid' column exists in the database
             schema_query = text("PRAGMA table_info(kosmatau_parameters)")
             columns = [row[1] for row in self.session.execute(schema_query).fetchall()]

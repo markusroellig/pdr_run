@@ -4,7 +4,7 @@ import os
 import sys
 import pytest
 from unittest.mock import patch
-from pdr_run.cli.runner import parse_arguments, configure_from_args
+from pdr_run.cli.runner import parse_arguments
 
 def test_parse_arguments_single_model():
     """Test parsing command line arguments for single model."""
@@ -29,25 +29,6 @@ def test_parse_arguments_grid():
         assert args.single is False
         assert args.cpus == 4
         
-def test_configure_from_args():
-    """Test environment configuration from arguments."""
-    with patch('argparse.ArgumentParser.parse_args') as mock_args:
-        # Setup mock arguments
-        mock_args.return_value.storage_type = 'remote'
-        mock_args.return_value.storage_dir = '/test/storage'
-        mock_args.return_value.db_type = 'sqlite'
-        mock_args.return_value.db_file = 'test.db'
-        mock_args.return_value.db_password = None
-        
-        args = mock_args.return_value
-        configure_from_args(args)
-        
-        assert os.environ.get('PDR_STORAGE_TYPE') == 'remote'
-        assert os.environ.get('PDR_STORAGE_DIR') == '/test/storage'
-        assert os.environ.get('PDR_DB_TYPE') == 'sqlite'
-        assert os.environ.get('PDR_DB_FILE') == 'test.db'
-        assert 'PDR_DB_PASSWORD' not in os.environ
-
 def test_mutually_exclusive_args():
     """Test that --single and --grid are mutually exclusive."""
     with patch('sys.argv', ['pdr_run', '--model-name', 'test', '--single', '--grid']):
