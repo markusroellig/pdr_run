@@ -89,12 +89,14 @@ STORAGE_CONFIG = {
     'type': 'local',                # 'local', 'rclone', 'sftp', 'ftp'
     'base_dir': '/home/roellig/pdr/pdr/test_run/model',  # Storage directory path (if None, uses PDR base_dir)
     'rclone_remote': 'kosmatau',    # Rclone remote name if using rclone
-    'use_mount': False,             # Set to True if you want to use mount functionality 
+    'use_mount': False,             # Set to True if you want to use mount functionality
+    'mount_point': None,            # Mount point path for rclone (defaults to <base_dir>/mnt)
     'host': None,                   # For SFTP/FTP
     'port': None,                   # For SFTP/FTP
     'username': None,               # For SFTP/FTP
     'password': None,               # For SFTP/FTP
     'use_local_copy': True,         # Keep local copy when using remote storage
+    'remote_path_prefix': None,     # Optional prefix to strip from remote paths (rclone)
 }
 
 # PDR model configuration

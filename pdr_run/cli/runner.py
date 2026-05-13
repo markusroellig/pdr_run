@@ -229,35 +229,52 @@ VALID_CONFIG_STRUCTURE = {
 }
 
 def validate_config(config_to_validate):
-    """
-    Validate the loaded configuration dictionary against a predefined structure.
-    Logs critical errors and aborts if any unknown parameters are found.
-    Handles section name aliases for backward compatibility.
+    """Validate the loaded configuration dictionary against a predefined structure.
+
+    Behavior:
+    - Unknown top-level sections abort the run (these are almost always typos
+      and the framework cannot route them anywhere).
+    - Unknown parameter keys inside a known section emit a warning but do NOT
+      abort. The default_config.py dicts intentionally don't list every key
+      the framework consumes (e.g. storage.remote_path_prefix is read in
+      storage/base.py and remote.py); rejecting legitimate keys broke valid
+      configs (issue #17). A warning still surfaces real typos in the logs.
+
+    Handles section name aliases (e.g. ``non_default_params`` →
+    ``non_default_parameters``) for backward compatibility.
     """
     logger.info("Starting configuration validation...")
-    
-    # Validate top-level sections
+
+    unknown_param_count = 0
     for section_name in config_to_validate.keys():
         canonical_section_name = SECTION_NAME_ALIASES.get(section_name, section_name)
 
         if canonical_section_name not in VALID_CONFIG_STRUCTURE:
             logger.critical(f"Unknown top-level section '{section_name}' found in configuration. Aborting.")
             sys.exit(1)
-        
+
         # Validate parameters within each known section (using canonical name for structure lookup)
         if isinstance(config_to_validate[section_name], dict):
             for param_name in config_to_validate[section_name].keys():
                 if param_name not in VALID_CONFIG_STRUCTURE[canonical_section_name]:
-                    logger.critical(f"Unknown parameter '{param_name}' found in section '{section_name}'. Aborting.")
-                    sys.exit(1)
+                    logger.warning(
+                        "Unknown parameter '%s' in section '%s' — not listed in defaults. "
+                        "Check for typos; if this key is consumed elsewhere in the framework, "
+                        "it will still be passed through.",
+                        param_name, section_name,
+                    )
+                    unknown_param_count += 1
         elif isinstance(config_to_validate[section_name], list):
             # For list-based sections (like directories.pdr_out_dirs), no further key validation
             pass
         else:
             # Handle other types if necessary, or just skip if they are not expected to contain parameters
             pass
-            
-    logger.info("Configuration validated successfully.")
+
+    if unknown_param_count:
+        logger.info("Configuration validated with %d unknown parameter(s) (warnings above).", unknown_param_count)
+    else:
+        logger.info("Configuration validated successfully.")
 
 def print_configuration(params, model_name, config, parallel=False, n_workers=None):
     """Print the full configuration that would be used for a run.
