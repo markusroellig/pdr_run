@@ -357,9 +357,15 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None, kee
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"keep_tmp flag for job {job_id}: {keep_tmp}")
 
-    # FIX: Reuse global DatabaseManager instance instead of creating new ones
-    # Tables have already been created in the main process, no need to recreate here
-    db_manager = get_db_manager()  # Get global instance without config parameter
+    # In parallel mode, joblib/loky spawns fresh worker processes where the
+    # module-level _db_manager singleton is None. If we call get_db_manager()
+    # with no config here, the worker silently falls back to the SQLite default
+    # (':memory:') and every subsequent query fails with "no such table".
+    # Pass the database config from the run config so the worker reconnects to
+    # the same backend (e.g. MySQL) as the main process. Tables were created
+    # once in the main process; the worker only needs to query.
+    db_config = (config or {}).get('database') if isinstance(config, dict) else None
+    db_manager = get_db_manager(db_config)
     db_manager.log_diagnostics(f"worker-{os.getpid()}:init")
 
     try:
@@ -585,7 +591,7 @@ def _setup_template_files(tmp_dir, pdr_dir, config, json_template=None):
 
 def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False):
     """Wrapper function for run_instance to handle exceptions.
-    
+
     Args:
         job_id (int): Job ID
         config (dict, optional): Configuration. Defaults to None.
@@ -593,13 +599,21 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
         json_template (str, optional): Path to a user-supplied JSON template. Defaults to None.
         keep_tmp (bool): If True, do not delete temporary directory after run.
     """
+    # Ensure the worker's DatabaseManager is bound to the correct backend before
+    # anything else runs. Without this, a failure early in run_instance would
+    # send the error-path update_job_status() call through a fresh SQLite
+    # singleton (the default) that has no tables.
+    db_config = (config or {}).get('database') if isinstance(config, dict) else None
+    if db_config is not None:
+        get_db_manager(db_config)
+
     try:
         output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp)
         for line in output:
             logger.info(f"[Job {job_id}]: {line}")
     except Exception as e:
         logger.error(f"Critical error in run_instance_wrapper for job {job_id}: {str(e)}", exc_info=True)
-        
+
         # Use session_scope for automatic cleanup - simplified error handling
         try:
             update_job_status(job_id, "exception")

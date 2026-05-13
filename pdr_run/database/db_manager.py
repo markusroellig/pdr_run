@@ -697,11 +697,12 @@ class DatabaseManager:
 
 # Global instance for backward compatibility
 _db_manager: Optional[DatabaseManager] = None
+_db_manager_pid: Optional[int] = None
 _db_manager_lock = threading.Lock()
 
 
 def get_db_manager(config: Optional[Dict[str, Any]] = None, force_new: bool = False) -> DatabaseManager:
-    """Get or create global database manager instance with thread safety.
+    """Get or create global database manager instance with thread / process safety.
 
     Args:
         config: Database configuration. If None, uses existing instance or creates with defaults.
@@ -713,31 +714,58 @@ def get_db_manager(config: Optional[Dict[str, Any]] = None, force_new: bool = Fa
     Note:
         To avoid connection leaks in parallel execution:
         - Main process should call this once with config to initialize
-        - Worker processes should call this without config to reuse the same instance
+        - Worker processes should pass the database config (e.g. config['database'])
+          so they reinitialize with the correct backend instead of falling back to
+          the SQLite default
         - Use force_new=True only when you need a truly separate database manager
 
-        This function uses double-checked locking for thread safety and performance:
-        - Fast path: If already initialized and not force_new, return immediately (no lock)
-        - Slow path: Acquire lock only when creating/replacing instance
+        Process-affinity: The manager and its SQLAlchemy engine own file descriptors
+        and connections that are not safe to share across process boundaries. When
+        joblib/loky spawns a worker (or multiprocessing forks one), this function
+        detects the PID change and creates a fresh manager in the worker rather than
+        reusing inherited state. The parent's engine is intentionally NOT disposed
+        here: those FDs belong to the parent process.
     """
-    global _db_manager
+    global _db_manager, _db_manager_pid
 
-    # Fast path: already initialized and not forcing new (common case, no lock needed)
+    current_pid = os.getpid()
+
+    # Detect cross-process reuse (forked child or stale singleton). The parent's
+    # engine cannot be safely reused — drop the reference without disposing it,
+    # since closing here would invalidate the parent's connections.
+    if _db_manager is not None and _db_manager_pid != current_pid:
+        logger.info(
+            "DatabaseManager was created in PID %s but current PID is %s; "
+            "reinitializing for this process.",
+            _db_manager_pid,
+            current_pid,
+        )
+        _db_manager = None
+        _db_manager_pid = None
+
+    # Fast path: already initialized in this process and not forcing new
     if _db_manager is not None and not force_new:
         logger.debug(f"Reusing existing DatabaseManager instance (manager_id={_db_manager.manager_id})")
         return _db_manager
 
     # Slow path: need to initialize or replace (uncommon case, acquire lock)
     with _db_manager_lock:
+        # Re-check PID under lock in case another thread reset it
+        if _db_manager is not None and _db_manager_pid != current_pid:
+            _db_manager = None
+            _db_manager_pid = None
+
         # Double-check after acquiring lock (another thread may have initialized)
         if _db_manager is None:
             logger.debug("Creating new DatabaseManager instance (first initialization)")
             _db_manager = DatabaseManager(config)
+            _db_manager_pid = current_pid
         elif force_new:
             logger.warning("Creating new DatabaseManager instance (force_new=True)")
             if _db_manager:
                 _db_manager.close()
             _db_manager = DatabaseManager(config)
+            _db_manager_pid = current_pid
         else:
             # Another thread initialized while we were waiting for lock
             logger.debug(f"Reusing existing DatabaseManager instance (manager_id={_db_manager.manager_id})")
@@ -747,8 +775,9 @@ def get_db_manager(config: Optional[Dict[str, Any]] = None, force_new: bool = Fa
 
 def reset_db_manager():
     """Reset the global database manager instance."""
-    global _db_manager
+    global _db_manager, _db_manager_pid
     if _db_manager:
         _db_manager.close()
     _db_manager = None
+    _db_manager_pid = None
 

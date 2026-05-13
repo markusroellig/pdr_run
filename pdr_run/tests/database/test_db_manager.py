@@ -4,7 +4,8 @@ import unittest
 import os
 import tempfile
 from unittest.mock import patch, MagicMock
-from pdr_run.database.db_manager import DatabaseManager, reset_db_manager
+from pdr_run.database import db_manager as dbm_module
+from pdr_run.database.db_manager import DatabaseManager, get_db_manager, reset_db_manager
 
 class TestDatabaseManager(unittest.TestCase):
     """Test database manager functionality."""
@@ -339,6 +340,79 @@ class TestDatabaseManager(unittest.TestCase):
             
             # Cleanup
             session.close()
+
+class TestDatabaseManagerProcessAffinity(unittest.TestCase):
+    """Regression tests for issue #15: parallel workers got fresh SQLite singletons.
+
+    Joblib's default LokyBackend spawns worker processes where the module-level
+    _db_manager singleton is None. Before the fix, get_db_manager() with no
+    config silently fell back to the SQLite default and every query failed with
+    'no such table: pdr_model_jobs'.
+    """
+
+    def setUp(self):
+        reset_db_manager()
+
+    def tearDown(self):
+        reset_db_manager()
+
+    def test_worker_pid_change_triggers_reinit(self):
+        """A different PID must produce a new manager, not reuse the parent's."""
+        parent_config = {'type': 'sqlite', 'path': ':memory:'}
+        parent = get_db_manager(parent_config)
+        parent_id = parent.manager_id
+        self.assertIsNotNone(dbm_module._db_manager_pid)
+
+        # Simulate that the singleton was created in a different process
+        # (i.e. we are now a freshly spawned/forked worker).
+        dbm_module._db_manager_pid = dbm_module._db_manager_pid + 100000
+
+        worker_config = {'type': 'sqlite', 'path': ':memory:'}
+        worker = get_db_manager(worker_config)
+
+        self.assertIsNot(worker, parent)
+        self.assertNotEqual(worker.manager_id, parent_id)
+        self.assertEqual(dbm_module._db_manager_pid, os.getpid())
+
+    def test_worker_uses_passed_config_not_default_sqlite(self):
+        """Workers must honor the config we pass, not silently use SQLite default.
+
+        This is the exact failure path from issue #15: a worker would call
+        get_db_manager() and get a fresh SQLite ':memory:' DB even though the
+        run was configured for MySQL.
+        """
+        # Isolate from PDR_DB_* env vars that earlier tests may have leaked,
+        # since _load_config applies env overrides on top of the passed config.
+        pdr_env_keys = [k for k in os.environ if k.startswith('PDR_DB_')]
+        with patch.dict(os.environ, {k: '' for k in pdr_env_keys}, clear=False):
+            for k in pdr_env_keys:
+                del os.environ[k]
+
+            # Set up "parent" manager
+            parent_config = {'type': 'sqlite', 'path': ':memory:'}
+            get_db_manager(parent_config)
+
+            # Simulate worker process
+            dbm_module._db_manager_pid = dbm_module._db_manager_pid + 100000
+
+            # Worker calls with the actual run config (MySQL-style)
+            mysql_config = {
+                'type': 'mysql',
+                'host': 'mysql.example.com',
+                'port': 3306,
+                'database': 'pdr_test',
+                'username': 'pdr_user',
+                'password': 'secret',
+            }
+            with patch('pdr_run.database.db_manager.create_engine') as mock_create_engine, \
+                 patch.object(DatabaseManager, '_setup_engine_events'):
+                mock_create_engine.return_value = MagicMock()
+                worker = get_db_manager(mysql_config)
+
+            # The worker's config must reflect what we passed, not the SQLite default
+            self.assertEqual(worker.config['type'], 'mysql')
+            self.assertEqual(worker.config['host'], 'mysql.example.com')
+
 
 if __name__ == '__main__':
     unittest.main()
