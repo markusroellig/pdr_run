@@ -112,6 +112,11 @@ def parse_arguments():
     # Add force-onion option
     parser.add_argument('--force-onion', action='store_true', 
                        help='Force running onion even if PDR model was skipped')
+
+    # Add force-simline option (SIMLINE RT post-processing; also runs on
+    # existing models when the PDR step is skipped -> RT-only grid reruns)
+    parser.add_argument('--force-simline', action='store_true',
+                       help='Run SIMLINE post-processing, even if PDR model was skipped')
     
     # Add keep-tmp option
     parser.add_argument('--keep-tmp', action='store_true',
@@ -512,6 +517,7 @@ def main():
                 model_name=model_name,
                 config=config,
                 force_onion=args.force_onion,
+                force_simline=args.force_simline,
                 json_template=args.json_template,
                 keep_tmp=args.keep_tmp
             )
@@ -530,6 +536,7 @@ def main():
                 parallel=args.parallel,
                 n_workers=args.workers,
                 force_onion=args.force_onion,
+                force_simline=args.force_simline,
                 json_template=args.json_template,
                 keep_tmp=args.keep_tmp
             )

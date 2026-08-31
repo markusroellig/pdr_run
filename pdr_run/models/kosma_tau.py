@@ -1,6 +1,7 @@
 """KOSMA-tau model management."""
 
 import os
+import re
 import logging
 import datetime
 import subprocess
@@ -991,7 +992,118 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
             _session.close()
             logger.debug(f"copy_onionoutput: Closed local session for job {job_id}")
 
-def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
+
+def run_simline(job_id, tmp_dir='./', config=None, session=None):
+    """Run SIMLINE radiative-transfer post-processing for a job.
+
+    Wraps the KOSMA-tau simline pipeline (simline/python/run_simline.py):
+    pdrstruct HDF5 -> converter -> SIMLINE binary -> FITS -> HDF5 + ASCII.
+    Species list and observation settings come from the pipeline's own
+    simline_config.json in <kosma-tau>/simline/python/, overridable via
+    config['simline'] = {
+        'enabled':     bool  (checked by run_kosma_tau, not here),
+        'species':     list  (optional --species override),
+        'simline_dir': str   (optional; default <pdr base_dir>/simline),
+        'config_file': str   (optional pipeline config JSON),
+        'timeout':     int   (seconds, default 3600),
+    }
+
+    Unlike ONION, which modifies the grid pdrstruct in place, SIMLINE
+    results are written into a separate working copy that is stored under
+    simlinegrid/pdrstruct<model>_simline.hdf5, so the ONION intensities in
+    pdrgrid/ remain untouched.
+    """
+    import sys as _sys
+
+    from pdr_run.storage.base import get_storage_backend
+
+    _session = session
+    session_created_locally = False
+    if _session is None:
+        _session = get_db_manager().get_session()
+        session_created_locally = True
+        logger.debug(f"run_simline: Created local session for job {job_id}")
+
+    try:
+        storage = get_storage_backend(config)
+        job = _session.get(PDRModelJob, job_id)
+        if not job:
+            raise ValueError(f"Job with ID {job_id} not found")
+
+        model = job.model_job_name
+        model_path = job.model_name.model_path
+
+        simline_cfg = (config or {}).get('simline', {}) or {}
+        pdr_base = (config or {}).get('pdr', {}).get('base_dir', PDR_CONFIG['base_dir'])
+        simline_dir = simline_cfg.get('simline_dir') or os.path.join(pdr_base, 'simline')
+        driver = os.path.join(simline_dir, 'python', 'run_simline.py')
+        if not os.path.isfile(driver):
+            raise FileNotFoundError(f"SIMLINE driver not found: {driver}")
+
+        # --- obtain the pdrstruct file (local run output, or fetch from storage)
+        workdir = os.path.abspath(tmp_dir)
+        outdir = os.path.join(workdir, 'pdroutput')
+        os.makedirs(outdir, exist_ok=True)
+        workfile = os.path.join(outdir, f'pdrstruct{model}_simline.hdf5')
+        local_struct = os.path.join(outdir, 'pdrstruct_s.hdf5')
+        if os.path.exists(local_struct):
+            shutil.copyfile(local_struct, workfile)
+        else:
+            remote_struct = os.path.join(model_path, 'pdrgrid', f'pdrstruct{model}.hdf5')
+            logger.info(f"run_simline: fetching {remote_struct} from storage")
+            storage.retrieve_file(remote_struct, workfile)
+
+        # --- per-job pipeline config: base config with an absolute simline_dir
+        base_cfg_path = simline_cfg.get('config_file') or os.path.join(
+            simline_dir, 'python', 'simline_config.json')
+        with open(base_cfg_path) as f:
+            cfg_text = f.read()
+        cfg_text = re.sub(r'"simline_dir"\s*:\s*"[^"]*"',
+                          f'"simline_dir": "{simline_dir}"', cfg_text)
+        job_cfg_path = os.path.join(workdir, 'simline_config_job.json')
+        with open(job_cfg_path, 'w') as f:
+            f.write(cfg_text)
+
+        cmd = [_sys.executable, driver, os.path.relpath(workfile, workdir),
+               '--config', job_cfg_path]
+        species = simline_cfg.get('species')
+        if species:
+            cmd += ['--species'] + list(species)
+
+        simline_out = os.path.join(workdir, 'simlineoutput')
+        os.makedirs(simline_out, exist_ok=True)
+        logger.info(f"Running SIMLINE pipeline for job {job_id}: {' '.join(cmd)}")
+        with open(os.path.join(simline_out, 'TEXTOUT_SIMLINE'), 'w') as textout:
+            proc = subprocess.run(cmd, cwd=workdir, stdout=textout,
+                                  stderr=subprocess.STDOUT,
+                                  timeout=simline_cfg.get('timeout', 3600))
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"SIMLINE pipeline exited with {proc.returncode} for job {job_id} "
+                f"(see simlineoutput/TEXTOUT_SIMLINE)")
+
+        # --- store results under simlinegrid/
+        stored = 0
+        for fname in sorted(os.listdir(simline_out)):
+            src = os.path.join(simline_out, fname)
+            if os.path.isfile(src):
+                storage.store_file(
+                    src, os.path.join(model_path, 'simlinegrid',
+                                      f'SIMLINE{model}.{fname}'))
+                stored += 1
+        storage.store_file(
+            workfile, os.path.join(model_path, 'simlinegrid',
+                                   f'pdrstruct{model}_simline.hdf5'))
+        logger.info(
+            f"Stored SIMLINE-augmented HDF5 and {stored} output file(s) "
+            f"under simlinegrid/ for job {job_id}")
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"run_simline: Closed local session for job {job_id}")
+
+
+def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_simline=False):
     """Run the KOSMA-tau model workflow for a job.
 
     Args:
@@ -1123,6 +1235,16 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None):
                 copy_onionoutput(spec, job_id, config=config, session=_session) # Pass session
         else:
             logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
+
+        # SIMLINE post-processing (opt-in via config['simline']['enabled'] or
+        # force_simline). force_simline also runs it when the PDR step was
+        # skipped because the model already exists (RT-only reruns on a grid).
+        simline_enabled = force_simline or (config or {}).get('simline', {}).get('enabled', False)
+        if simline_enabled:
+            if not pdr_skipped or force_onion or force_simline:
+                run_simline(job_id, tmp_dir, config=config, session=_session)
+            else:
+                logger.info("Skipping SIMLINE as PDR was skipped. Use force_simline=True to override.")
         
         # Copy output files - moved after the onion run because ONION modifies the HDF5 file
         # Only copy if we actually ran the PDR model
