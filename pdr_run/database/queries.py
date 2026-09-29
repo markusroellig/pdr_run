@@ -2,8 +2,9 @@
 
 import logging
 import time
+from datetime import datetime, timedelta
 from functools import wraps
-from typing import TypeVar, Type, Optional, Any, Callable
+from typing import TypeVar, Type, Optional, Any, Callable, List
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import (
@@ -21,6 +22,19 @@ from pdr_run.database.models import (
 from pdr_run.models.job_status import ALL_STATUSES as _JOB_STATUS_ALL_STATUSES
 
 logger = logging.getLogger('dev')
+
+# Status assigned by reset_stale_jobs() to a 'running' job whose
+# time_of_start is too old to still be a genuine in-progress run. Kept out
+# of job_status.ALL_STATUSES (that module classifies a *completed* pdrexe
+# run; this one classifies a row the driver never got to finish writing).
+STATUS_RESET_STALE = 'reset_stale'
+
+# Default staleness window used when the caller (CLI/engine) does not have
+# a config['pdr']['max_walltime_s'] to derive one from. Deliberately much
+# larger than any single grid-1 node is expected to take (hours), so this
+# only ever fires for jobs truly abandoned by a crashed/killed driver -
+# never for one that is still legitimately running.
+DEFAULT_STALE_AFTER_S = 6 * 3600
 
 T = TypeVar('T')
 
@@ -311,7 +325,9 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
                      # legacy PDR-run terminal statuses (models/kosma_tau.py)
                      'problem', 'ERROR', 'failed_storage',
                      # pdr_run.models.job_status.determine_job_status() outcomes
-                     *_JOB_STATUS_ALL_STATUSES]:
+                     *_JOB_STATUS_ALL_STATUSES,
+                     # reset_stale_jobs() outcome (crashed-driver recovery)
+                     STATUS_RESET_STALE]:
         job.active = False
         job.pending = False
 
@@ -322,6 +338,131 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
         logger.error(f"Failed to update job {job_id} status to '{status}': {e}")
         session.rollback()
         raise
+
+
+def find_stale_jobs(session: Optional[Session] = None,
+                     stale_after_s: float = DEFAULT_STALE_AFTER_S) -> List[PDRModelJob]:
+    """Find jobs stuck in status ``'running'`` that are almost certainly
+    abandoned by a crashed or killed driver process rather than still
+    genuinely executing.
+
+    A pdrexe run that is actually still in progress always has a bounded
+    lifetime: either it finishes and ``run_pdr()`` writes a terminal status
+    (see ``pdr_run.models.job_status``), or it hits
+    ``config['pdr']['max_walltime_s']`` and ``_kill_process_group()`` /
+    ``determine_job_status()`` write ``'timeout'``. A row that is still
+    ``'running'`` long after any plausible wall-time cap was never given
+    the chance to reach either of those - the driver process itself (not
+    pdrexe) died. This function only *detects* such rows; call
+    ``reset_stale_jobs()`` to mark them so job-status bookkeeping
+    (``active``/``pending``) is no longer wrong.
+
+    Args:
+        session: Database session (optional; a local one is used if None).
+        stale_after_s: Age of ``time_of_start``, in seconds, beyond which a
+            still-'running' job is considered abandoned. Pass e.g.
+            ``config['pdr']['max_walltime_s'] * 1.5`` when a wall-time cap
+            is configured for a tighter, run-specific threshold.
+
+    Returns:
+        List of stale ``PDRModelJob`` rows (may be attached to a locally
+        created session - read their attributes before it is closed, or
+        pass in your own session to keep them usable).
+    """
+    _session = session
+    session_created_locally = False
+    if _session is None:
+        _session = get_db_manager().get_session()
+        session_created_locally = True
+
+    try:
+        cutoff = datetime.now() - timedelta(seconds=stale_after_s)
+        stale = (
+            _session.query(PDRModelJob)
+            .filter(PDRModelJob.status == 'running')
+            .filter(PDRModelJob.time_of_start.isnot(None))
+            .filter(PDRModelJob.time_of_start < cutoff)
+            .all()
+        )
+        if stale:
+            logger.warning(
+                "Found %d job(s) stuck in status 'running' with time_of_start "
+                "older than %.0fs (likely abandoned by a crashed driver): %s",
+                len(stale), stale_after_s,
+                [(j.id, j.model_job_name, j.time_of_start) for j in stale],
+            )
+        return stale
+    finally:
+        if session_created_locally:
+            # Caller only reads plain attributes already loaded above;
+            # closing here is safe and avoids leaking a connection.
+            _session.close()
+
+
+def reset_stale_jobs(session: Optional[Session] = None,
+                      stale_after_s: float = DEFAULT_STALE_AFTER_S,
+                      dry_run: bool = False) -> List[int]:
+    """Mark jobs found by ``find_stale_jobs()`` as ``'reset_stale'`` so they
+    are no longer counted as ``active``/``pending`` and a human reviewing
+    the grid table can immediately see which nodes need a manual rerun.
+
+    This does NOT create a replacement job - job creation happens once in
+    ``pdr_run.core.engine.create_database_entries()``; re-running the same
+    grid invocation will create a fresh job row for the same parameters
+    (the old, now-'reset_stale' row is left in place for provenance, same
+    pattern as the retired-row convention used elsewhere in this project).
+
+    Args:
+        session: Database session (optional).
+        stale_after_s: See ``find_stale_jobs()``.
+        dry_run: If True, only log/report what would be reset; make no
+            database changes. Intended for a pre-flight check before a
+            production grid run.
+
+    Returns:
+        List of job IDs that were (or, in dry_run mode, would be) reset.
+    """
+    _session = session
+    session_created_locally = False
+    if _session is None:
+        _session = get_db_manager().get_session()
+        session_created_locally = True
+
+    try:
+        stale = find_stale_jobs(_session, stale_after_s=stale_after_s)
+        job_ids = [j.id for j in stale]
+        if not job_ids:
+            return []
+
+        if dry_run:
+            logger.warning(
+                "[dry-run] Would reset %d stale job(s) to status '%s': %s",
+                len(job_ids), STATUS_RESET_STALE, job_ids,
+            )
+            return job_ids
+
+        for job in stale:
+            age_s = (datetime.now() - job.time_of_start).total_seconds()
+            logger.warning(
+                "Resetting stale job %d (%s), running since %s (%.0fs ago), "
+                "to status '%s'",
+                job.id, job.model_job_name, job.time_of_start, age_s,
+                STATUS_RESET_STALE,
+            )
+            job.status = STATUS_RESET_STALE
+            job.active = False
+            job.pending = False
+
+        try:
+            _session.commit()
+        except Exception as e:
+            logger.error(f"Failed to commit reset of stale jobs {job_ids}: {e}")
+            _session.rollback()
+            raise
+        return job_ids
+    finally:
+        if session_created_locally:
+            _session.close()
 
 
 def get_session() -> Session:

@@ -793,7 +793,22 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
         config
     )
     logger.info(f"Database entries created in {time.time() - creation_start:.2f} seconds")
-    
+
+    # Non-mutating detection of jobs stuck in status 'running' from a
+    # previous, since-crashed driver process (see database.queries.
+    # find_stale_jobs / reset_stale_jobs). This only logs a warning here -
+    # it must never abort or delay a production grid run over a DB hiccup,
+    # and resetting the rows is a separate, explicit operator action
+    # (pdr_run --reset-stale-jobs) so a legitimately still-running job from
+    # a concurrent, unrelated pdr_run invocation is never touched silently.
+    try:
+        from pdr_run.database.queries import find_stale_jobs, DEFAULT_STALE_AFTER_S
+        max_walltime_s = (config.get('pdr') or {}).get('max_walltime_s')
+        stale_after_s = max_walltime_s * 1.5 if max_walltime_s else DEFAULT_STALE_AFTER_S
+        find_stale_jobs(stale_after_s=stale_after_s)
+    except Exception as exc:
+        logger.debug(f"Stale-job detection skipped (non-fatal): {exc}")
+
     # Determine number of workers
     if n_workers is None:
         n_workers = _calculate_cpu_count(reserved_cpus=params.get('reserved_cpus', 2))

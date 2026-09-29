@@ -1511,13 +1511,51 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
         _session.close() # Close the session acquired at the beginning of run_kosma_tau
         logger.debug(f"Database session closed for job {job_id} in run_kosma_tau")
 
+# Sentinel written to HDFFile.sha256_sum* when a model is skipped because it
+# already exists in storage (update_db_pdr_output_entries below): we never
+# downloaded/hashed the actual bytes, so there is no real checksum to store.
+# Deliberately NOT a valid hex string (a real sha256_sum is 64 lowercase hex
+# chars) so any code or query naively treating this column as a real digest
+# fails loudly/obviously instead of silently comparing against a fake hash.
+UNVERIFIED_CHECKSUM_SENTINEL = "UNVERIFIED:no-local-hash-model-skipped-exists-remotely"
+
+
+def _placeholder_file_stat(full_path):
+    """Best-effort (file_size, warned) for a file we are registering in the
+    database without downloading/hashing it (see
+    ``update_db_pdr_output_entries``). For local storage, ``full_path`` is
+    already a real filesystem path, so a cheap ``os.path.getsize()`` gives
+    an accurate size at negligible cost - much cheaper than a full sha256
+    of a multi-hundred-MB HDF5 file, but still catches the common
+    "existing file is 0 bytes / truncated" case. For a genuinely remote
+    backend (SFTP/rclone) this path is not locally readable and the size
+    falls back to 0, logged as such - callers must not mistake the 0 for a
+    verified empty file.
+    """
+    try:
+        if os.path.isfile(full_path):
+            return os.path.getsize(full_path), False
+    except OSError as exc:
+        logger.warning(f"Could not stat {full_path} for size verification: {exc}")
+    logger.warning(
+        f"Registering {full_path} in the database without a verified size "
+        "or checksum (file not locally reachable - remote storage backend). "
+        f"sha256_sum will be the sentinel '{UNVERIFIED_CHECKSUM_SENTINEL}'.")
+    return 0, True
+
+
 def update_db_pdr_output_entries(job_id, session):
     """Update database entries for PDR output files when skipping execution.
-    
+
     This function is called when a model already exists remotely and we're
     skipping the PDR execution. It creates database entries with placeholder
     values since we can't access the remote files directly.
-    
+
+    The size is verified cheaply where possible (local storage backend);
+    the checksum is always the ``UNVERIFIED_CHECKSUM_SENTINEL`` sentinel -
+    see ``_placeholder_file_stat`` - since computing a real sha256 would
+    require downloading the full file, defeating the point of skipping.
+
     Args:
         job_id (int): Job ID
         session: Database session
@@ -1584,33 +1622,40 @@ def update_db_pdr_output_entries(job_id, session):
                 existing_hdf.full_path_ctrl_ind = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
         else:
             logger.info(f"Creating new database entry for model {model}")
-            
+
+            full_path = os.path.join(model_path, 'pdrgrid', hdf_out_name)
+            full_path_hdf5_s = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
+            full_path_hdf5_c = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
+            file_size, _ = _placeholder_file_stat(full_path)
+            file_size_hdf5_s, _ = _placeholder_file_stat(full_path_hdf5_s)
+            file_size_hdf5_c, _ = _placeholder_file_stat(full_path_hdf5_c)
+
             # Create a minimal HDFFile entry with only the required/known fields
             hdf_file_args = {
                 'parameter_id': job.kosmatau_parameters_id,
                 'model_name_id': job.model_name_id,
                 'file_name': hdf_out_name,
-                'full_path': os.path.join(model_path, 'pdrgrid', hdf_out_name),
+                'full_path': full_path,
                 'path': os.path.join(model_path, 'pdrgrid'),
                 'modification_time': current_time,
-                'sha256_sum': "remote_file_no_local_hash",
-                'file_size': 0,  # Placeholder value
+                'sha256_sum': UNVERIFIED_CHECKSUM_SENTINEL,
+                'file_size': file_size,
                 # HDF5 structure file fields (these seem to exist based on copy_pdroutput)
                 'file_name_hdf5_s': hdf5_struct_out_name,
-                'full_path_hdf5_s': os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name),
+                'full_path_hdf5_s': full_path_hdf5_s,
                 'path_hdf5_s': os.path.join(model_path, 'pdrgrid'),
                 'modification_time_hdf5_s': current_time,
-                'sha256_sum_hdf5_s': "remote_file_no_local_hash",
-                'file_size_hdf5_s': 0,  # Placeholder value
+                'sha256_sum_hdf5_s': UNVERIFIED_CHECKSUM_SENTINEL,
+                'file_size_hdf5_s': file_size_hdf5_s,
                 # HDF5 chemistry file fields (these seem to exist based on copy_pdroutput)
                 'file_name_hdf5_c': hdf5_chem_out_name,
-                'full_path_hdf5_c': os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name),
+                'full_path_hdf5_c': full_path_hdf5_c,
                 'path_hdf5_c': os.path.join(model_path, 'pdrgrid'),
                 'modification_time_hdf5_c': current_time,
-                'sha256_sum_hdf5_c': "remote_file_no_local_hash",
-                'file_size_hdf5_c': 0,  # Placeholder value
+                'sha256_sum_hdf5_c': UNVERIFIED_CHECKSUM_SENTINEL,
+                'file_size_hdf5_c': file_size_hdf5_c,
             }
-            
+
             # Try to create the HDFFile with these arguments
             try:
                 hdf_file = HDFFile(**hdf_file_args)
@@ -1622,11 +1667,11 @@ def update_db_pdr_output_entries(job_id, session):
                     'parameter_id': job.kosmatau_parameters_id,
                     'model_name_id': job.model_name_id,
                     'file_name': hdf_out_name,
-                    'full_path': os.path.join(model_path, 'pdrgrid', hdf_out_name),
+                    'full_path': full_path,
                     'path': os.path.join(model_path, 'pdrgrid'),
                     'modification_time': current_time,
-                    'sha256_sum': "remote_file_no_local_hash",
-                    'file_size': 0,
+                    'sha256_sum': UNVERIFIED_CHECKSUM_SENTINEL,
+                    'file_size': file_size,
                 }
                 hdf_file = HDFFile(**minimal_args)
                 _session.add(hdf_file)

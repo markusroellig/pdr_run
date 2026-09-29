@@ -178,7 +178,24 @@ def parse_arguments():
         type=str,
         help='Path to a JSON parameter template file to use for this run'
     )
-    
+
+    # Stale-job recovery: jobs left in status 'running' by a driver process
+    # that crashed or was killed before pdrexe itself finished/timed out.
+    # See pdr_run.database.queries.reset_stale_jobs(). A utility action -
+    # runs and exits, does not launch any model.
+    parser.add_argument(
+        '--reset-stale-jobs', action='store_true',
+        help="Mark jobs stuck in status 'running' (time_of_start older than "
+             "--stale-after-hours) as 'reset_stale' and exit, without "
+             "running any model. Combine with --dry-run to only report "
+             "what would be reset."
+    )
+    parser.add_argument(
+        '--stale-after-hours', type=float, default=None,
+        help='Age threshold (hours) for --reset-stale-jobs. Default: '
+             '1.5x config[pdr][max_walltime_s] if set, else 6 hours.'
+    )
+
     return parser.parse_args()
 
 def load_config(config_file):
@@ -495,6 +512,31 @@ def main():
                 if os.path.exists(base_dir):
                     logger.info(f"Directory content of {base_dir}: {os.listdir(base_dir)}")
     
+    # Stale-job recovery utility action: runs and exits, no model execution.
+    if getattr(args, 'reset_stale_jobs', False):
+        from pdr_run.database.queries import reset_stale_jobs, DEFAULT_STALE_AFTER_S
+        from pdr_run.database.db_manager import get_db_manager
+        # This can be the first thing run against a database (e.g. right
+        # after deploying to a new host) - ensure the schema exists (and
+        # any additive columns are patched in) before querying it, exactly
+        # like a normal grid run's create_database_entries() would. Safe
+        # to call repeatedly (see DatabaseManager.create_tables()).
+        get_db_manager(config.get('database') if config else None).create_tables()
+        if args.stale_after_hours is not None:
+            stale_after_s = args.stale_after_hours * 3600
+        else:
+            max_walltime_s = (config.get('pdr') or {}).get('max_walltime_s') if config else None
+            stale_after_s = max_walltime_s * 1.5 if max_walltime_s else DEFAULT_STALE_AFTER_S
+        reset_job_ids = reset_stale_jobs(
+            stale_after_s=stale_after_s,
+            dry_run=bool(getattr(args, 'dry_run', False)),
+        )
+        if reset_job_ids:
+            logger.info(f"Stale-job reset: {len(reset_job_ids)} job(s) -> {reset_job_ids}")
+        else:
+            logger.info("Stale-job reset: no stale jobs found")
+        return
+
     # Check for dry run mode
     if hasattr(args, 'dry_run') and args.dry_run:
         print_configuration(

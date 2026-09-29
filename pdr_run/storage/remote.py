@@ -9,10 +9,21 @@ for different remote storage protocols.
 import os
 import subprocess
 import logging
+import socket
 import sys
 import paramiko
 from pdr_run.storage.base import Storage
 from pdr_run.utils.logging import get_password_status
+from pdr_run.utils.retry import retry_with_backoff
+
+# Exceptions worth retrying for network/remote-endpoint transfers: transient
+# connection drops, timeouts, and subprocess launch failures. NOT retried:
+# authentication failures, local FileNotFoundError for the source file, or
+# any other programming error - those will fail identically on every retry
+# and just waste a grid node's time.
+_SFTP_RETRYABLE = (paramiko.SSHException, socket.error, socket.timeout,
+                    ConnectionError, OSError, EOFError)
+_RCLONE_RETRYABLE = (subprocess.SubprocessError, RuntimeError, OSError)
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -190,57 +201,66 @@ class SFTPStorage(RemoteStorage):
             client.close()
     
     def store_file(self, local_path, remote_path):
-        """Store a file using SFTP with extensive debugging."""
+        """Store a file using SFTP with extensive debugging.
+
+        Retries the connect+upload attempt (bounded, with backoff) on
+        transient connection errors, since a single dropped SSH session
+        must not lose a multi-hour grid node's result file.
+        """
         self.logger.debug("=== SFTP STORE FILE ===")
         self.logger.debug(f"Local path: {local_path}")
         self.logger.debug(f"Remote path: {remote_path}")
         self.logger.debug(f"Full remote path: {os.path.join(self.base_dir, remote_path)}")
-        
+
         if not os.path.exists(local_path):
             self.logger.error(f"Local file does not exist: {local_path}")
             raise FileNotFoundError(f"Local file not found: {local_path}")
-            
+
         file_size = os.path.getsize(local_path)
         self.logger.debug(f"Local file size: {file_size} bytes")
-        
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        try:
-            self.logger.debug(f"Connecting to SFTP server {self.host}")
-            client.connect(self.host, username=self.user, password=self.password)
-            sftp = client.open_sftp()
-            
-            # Ensure directory exists
-            full_remote_path = os.path.join(self.base_dir, remote_path)
-            remote_dir = os.path.dirname(full_remote_path)
-            
-            self.logger.debug(f"Ensuring remote directory exists: {remote_dir}")
-            self._ensure_remote_directory(sftp, remote_dir)
-            
-            # Upload file
-            self.logger.debug(f"Starting file upload to {full_remote_path}")
-            sftp.put(local_path, full_remote_path)
-            
-            # Verify upload
+
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_SFTP_RETRYABLE)
+        def _attempt():
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
-                remote_stat = sftp.stat(full_remote_path)
-                self.logger.debug(f"Upload successful - remote file size: {remote_stat.st_size} bytes")
-                if remote_stat.st_size != file_size:
-                    self.logger.warning(f"File size mismatch: local={file_size}, remote={remote_stat.st_size}")
-            except Exception as e:
-                self.logger.error(f"Failed to verify uploaded file: {e}")
-                
-            self.logger.info(f"Successfully stored file via SFTP: {local_path} -> {full_remote_path}")
+                self.logger.debug(f"Connecting to SFTP server {self.host}")
+                client.connect(self.host, username=self.user, password=self.password)
+                sftp = client.open_sftp()
+
+                # Ensure directory exists
+                full_remote_path = os.path.join(self.base_dir, remote_path)
+                remote_dir = os.path.dirname(full_remote_path)
+
+                self.logger.debug(f"Ensuring remote directory exists: {remote_dir}")
+                self._ensure_remote_directory(sftp, remote_dir)
+
+                # Upload file
+                self.logger.debug(f"Starting file upload to {full_remote_path}")
+                sftp.put(local_path, full_remote_path)
+
+                # Verify upload
+                try:
+                    remote_stat = sftp.stat(full_remote_path)
+                    self.logger.debug(f"Upload successful - remote file size: {remote_stat.st_size} bytes")
+                    if remote_stat.st_size != file_size:
+                        self.logger.warning(f"File size mismatch: local={file_size}, remote={remote_stat.st_size}")
+                except Exception as e:
+                    self.logger.error(f"Failed to verify uploaded file: {e}")
+
+                self.logger.info(f"Successfully stored file via SFTP: {local_path} -> {full_remote_path}")
+            finally:
+                client.close()
+
+        try:
+            _attempt()
             return True
-            
         except Exception as e:
-            self.logger.error(f"SFTP store_file failed: {e}")
+            self.logger.error(f"SFTP store_file failed after retries: {e}")
             import traceback
             self.logger.debug(f"Full traceback: {traceback.format_exc()}")
             return False
-        finally:
-            client.close()
     
     def _ensure_remote_directory(self, sftp, remote_dir):
         """Ensure remote directory exists with debugging."""
@@ -264,35 +284,44 @@ class SFTPStorage(RemoteStorage):
                 self.logger.debug(f"Creating directory: {directory}")
                 sftp.mkdir(directory)
     
+    @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                         exceptions=_SFTP_RETRYABLE)
     def retrieve_file(self, remote_path, local_path):
-        """Retrieve a file using SFTP."""
+        """Retrieve a file using SFTP.
+
+        Bounded retry with backoff on transient connection errors (see
+        ``store_file``); a ``FileNotFoundError`` from a genuinely missing
+        remote file is not retried (not in ``_SFTP_RETRYABLE``).
+        """
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
+
         try:
             client.connect(self.host, username=self.user, password=self.password)
             sftp = client.open_sftp()
-            
+
             # Ensure local directory exists
             local_dir = os.path.dirname(local_path)
             if local_dir:  # Only create directory if it's not empty
                 os.makedirs(local_dir, exist_ok=True)
-            
+
             # Download file
             sftp.get(os.path.join(self.base_dir, remote_path), local_path)
             return True
         finally:
             client.close()
-    
+
+    @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                         exceptions=_SFTP_RETRYABLE)
     def list_files(self, path):
-        """List files using SFTP."""
+        """List files using SFTP. Bounded retry on transient connection errors."""
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
+
         try:
             client.connect(self.host, username=self.user, password=self.password)
             sftp = client.open_sftp()
-            
+
             # List files
             full_path = os.path.join(self.base_dir, path)
             try:
@@ -304,34 +333,47 @@ class SFTPStorage(RemoteStorage):
 
     def file_exists(self, remote_path):
         """Check if a file exists on the remote server.
-        
+
+        A transient connection failure here must not be mistaken for "file
+        does not exist" - that would make ``run_kosma_tau`` needlessly
+        re-run a multi-hour PDR model that is already stored remotely. The
+        connect+stat attempt is retried (bounded, with backoff); only a
+        genuine ``FileNotFoundError`` from the remote stat (i.e. we did
+        reach the server) is treated as "does not exist".
+
         Args:
             remote_path (str): Path to check on the remote server
-            
+
         Returns:
             bool: True if file exists, False otherwise
         """
-        try:
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_SFTP_RETRYABLE)
+        def _attempt():
             with paramiko.SSHClient() as ssh:
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 ssh.connect(self.host, username=self.user, password=self.password)
-                
+
                 with ssh.open_sftp() as sftp:
                     # Convert relative path to absolute
                     if not remote_path.startswith('/'):
                         full_path = os.path.join(self.base_dir, remote_path)
                     else:
                         full_path = remote_path
-                    
+
                     try:
                         # Try to get file stats - if successful, file exists
                         sftp.stat(full_path)
                         return True
                     except FileNotFoundError:
                         return False
-                        
+
+        try:
+            return _attempt()
         except Exception as e:
-            self.logger.debug(f"Error checking file existence: {e}")
+            self.logger.warning(
+                f"Could not determine whether {remote_path} exists on "
+                f"{self.host} after retries (treating as absent): {e}")
             return False
 
 class RCloneStorage(Storage):
@@ -391,9 +433,14 @@ class RCloneStorage(Storage):
         """Store a file to remote storage using rclone with exact filename control.
 
         Uses rclone copyto for atomic file-to-file transfer, which avoids race
-        conditions in parallel execution (fixes GitHub issue #10).
+        conditions in parallel execution (fixes GitHub issue #10). The
+        mkdir+copyto attempt is retried (bounded, with backoff) on transient
+        rclone/transport failures - a single flaky remote-endpoint call must
+        not lose a multi-hour grid node's result file.
         """
-        try:
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_RCLONE_RETRYABLE)
+        def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
 
             # Get the target directory
@@ -410,111 +457,158 @@ class RCloneStorage(Storage):
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             if result.returncode != 0:
-                self.logger.error(f"RClone copyto failed: {result.stderr}")
-                return False
+                raise RuntimeError(f"RClone copyto failed (rc={result.returncode}): {result.stderr}")
 
             self.logger.info(f"Stored {local_path} as {full_remote_path}")
-            return True
 
+        try:
+            _attempt()
+            return True
         except subprocess.SubprocessError as e:
-            self.logger.error(f"Failed to upload file with rclone: {e}")
+            self.logger.error(f"Failed to upload file with rclone after retries: {e}")
             return False
         except Exception as e:
-            self.logger.error(f"Unexpected error in store_file: {e}")
+            self.logger.error(f"Unexpected error in store_file after retries: {e}")
             return False
 
     def retrieve_file(self, remote_path, local_path):
-        """Download a file from remote storage using rclone."""
-        try:
+        """Download a file from remote storage using rclone.
+
+        Bounded retry with backoff on transient rclone/transport failures.
+        """
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_RCLONE_RETRYABLE)
+        def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
-            
+
             # Ensure local directory exists
             local_dir = os.path.dirname(local_path)
             if local_dir:
                 os.makedirs(local_dir, exist_ok=True)
-            
+
             # Use rclone copyto for exact file-to-file copy
             cmd = ['rclone', 'copyto', full_remote_path, local_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            
+
             if result.returncode != 0:
-                self.logger.error(f"RClone retrieve failed: {result.stderr}")
-                return False
-                
+                raise RuntimeError(f"RClone retrieve failed (rc={result.returncode}): {result.stderr}")
+
             self.logger.info(f"Retrieved {full_remote_path} to {local_path}")
+
+        try:
+            _attempt()
             return True
-            
         except subprocess.SubprocessError as e:
-            self.logger.error(f"Failed to download file with rclone: {e}")
+            self.logger.error(f"Failed to download file with rclone after retries: {e}")
             return False
         except Exception as e:
-            self.logger.error(f"Unexpected error in retrieve_file: {e}")
+            self.logger.error(f"Unexpected error in retrieve_file after retries: {e}")
             return False
 
     def list_files(self, path):
-        """List files in remote storage using rclone."""
-        try:
+        """List files in remote storage using rclone. Bounded retry on
+        transient rclone/transport failures."""
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_RCLONE_RETRYABLE)
+        def _attempt():
             full_remote_path = self._get_full_remote_path(path)
-            
+
             # Use simple lsf which just returns filenames - much cleaner!
             cmd = ['rclone', 'lsf', full_remote_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            
+
             if result.returncode != 0:
-                self.logger.error(f"Failed to list files with rclone: {result.stderr}")
-                return []
-            
+                raise RuntimeError(f"RClone lsf failed (rc={result.returncode}): {result.stderr}")
+
             # Split the output into lines and strip whitespace
-            files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            return files
-            
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+        try:
+            return _attempt()
         except subprocess.SubprocessError as e:
-            self.logger.error(f"Failed to list files with rclone: {e}")
+            self.logger.error(f"Failed to list files with rclone after retries: {e}")
             return []
         except Exception as e:
-            self.logger.error(f"Unexpected error in list_files: {e}")
+            self.logger.error(f"Unexpected error in list_files after retries: {e}")
             return []
 
     def sync_directory(self, local_dir, remote_dir):
-        """Synchronize an entire directory to remote storage."""
-        try:
+        """Synchronize an entire directory to remote storage. Bounded retry
+        on transient rclone/transport failures."""
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_RCLONE_RETRYABLE)
+        def _attempt():
             full_remote_path = self._get_full_remote_path(remote_dir)
-            
+
             # Ensure remote directory exists
             mkdir_cmd = ['rclone', 'mkdir', full_remote_path]
             subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
+
             # Sync the directory
             cmd = ['rclone', 'copy', local_dir, full_remote_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            
+
             if result.returncode != 0:
-                self.logger.error(f"RClone sync failed: {result.stderr}")
-                return False
-            
+                raise RuntimeError(f"RClone sync failed (rc={result.returncode}): {result.stderr}")
+
             self.logger.info(f"Synchronized {local_dir} to {full_remote_path}")
+
+        try:
+            _attempt()
             return True
-            
         except Exception as e:
-            self.logger.error(f"Failed to sync directory: {str(e)}", exc_info=True)
+            self.logger.error(f"Failed to sync directory after retries: {str(e)}", exc_info=True)
             return False
     
+    # stderr substrings that indicate rclone could not reach the remote at
+    # all (worth retrying), as opposed to a normal "path does not exist"
+    # non-zero exit (the expected, common case for a not-yet-computed grid
+    # node - must not be retried, or every fresh node pays 3 retries).
+    _RCLONE_TRANSPORT_ERROR_MARKERS = (
+        'timeout', 'timed out', 'connection refused', "couldn't connect",
+        'no such host', 'network is unreachable', 'i/o timeout',
+        'temporary failure', 'connection reset', 'broken pipe',
+    )
+
     def file_exists(self, remote_path):
-        """Check if a file exists on the remote server using rclone."""
-        try:
+        """Check if a file exists on the remote server using rclone.
+
+        A transient connection failure here must not be mistaken for "file
+        does not exist" - that would make ``run_kosma_tau`` needlessly
+        re-run a multi-hour PDR model that is already stored remotely. Only
+        exit statuses whose stderr looks like a transport/connectivity
+        problem are retried; the ordinary "path not found" non-zero exit is
+        not retried (it is the expected, common case for a fresh node and
+        must stay cheap).
+        """
+        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
+                             exceptions=_RCLONE_RETRYABLE)
+        def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
-            
+
             # Use rclone lsf to check if the specific file exists
             cmd = ['rclone', 'lsf', full_remote_path]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            
+
+            if result.returncode != 0:
+                stderr_lower = (result.stderr or '').lower()
+                if any(marker in stderr_lower for marker in
+                       self._RCLONE_TRANSPORT_ERROR_MARKERS):
+                    raise RuntimeError(
+                        f"RClone lsf transport error (rc={result.returncode}): {result.stderr}")
+                # Otherwise: treat as "path does not exist" (not retryable).
+
             # If lsf returns output, the file exists
             return bool(result.stdout.strip())
-            
+
+        try:
+            return _attempt()
         except subprocess.SubprocessError as e:
             # If the command fails, likely the file doesn't exist
-            self.logger.debug(f"Error checking file existence with rclone: {e}")
+            self.logger.debug(f"Error checking file existence with rclone after retries: {e}")
             return False
         except Exception as e:
-            self.logger.debug(f"Error checking file existence: {e}")
+            self.logger.warning(
+                f"Could not determine whether {remote_path} exists via "
+                f"rclone after retries (treating as absent): {e}")
             return False

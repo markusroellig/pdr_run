@@ -91,3 +91,58 @@ def test_validate_config_accepts_section_aliases():
         'non_default_params': {'ih2meth': 0, 'tgasc': 50.0}
     }
     validate_config(config)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# --reset-stale-jobs — crashed-driver recovery CLI wiring
+# ---------------------------------------------------------------------------
+
+def test_parse_arguments_reset_stale_jobs():
+    with patch('sys.argv', ['pdr_run', '--reset-stale-jobs', '--stale-after-hours', '2.5']):
+        args = parse_arguments()
+
+    assert args.reset_stale_jobs is True
+    assert args.stale_after_hours == 2.5
+
+
+def test_parse_arguments_reset_stale_jobs_defaults_off():
+    with patch('sys.argv', ['pdr_run', '--single']):
+        args = parse_arguments()
+
+    assert args.reset_stale_jobs is False
+    assert args.stale_after_hours is None
+
+
+def test_main_reset_stale_jobs_runs_and_exits_without_launching_models():
+    """--reset-stale-jobs is a standalone utility action: it must call
+    reset_stale_jobs() and return before run_model/run_parameter_grid ever
+    execute (no model should be launched)."""
+    from pdr_run.cli.runner import main
+
+    with patch('sys.argv', ['pdr_run', '--reset-stale-jobs', '--stale-after-hours', '1']), \
+         patch('pdr_run.database.db_manager.get_db_manager') as mock_get_db_manager, \
+         patch('pdr_run.database.queries.reset_stale_jobs', return_value=[7, 9]) as mock_reset, \
+         patch('pdr_run.core.engine.run_model') as mock_run_model, \
+         patch('pdr_run.core.engine.run_parameter_grid') as mock_run_grid:
+        mock_get_db_manager.return_value.create_tables.return_value = None
+        main()
+
+    mock_reset.assert_called_once()
+    _, kwargs = mock_reset.call_args
+    assert kwargs['stale_after_s'] == 3600  # 1 hour
+    assert kwargs['dry_run'] is False
+    mock_run_model.assert_not_called()
+    mock_run_grid.assert_not_called()
+
+
+def test_main_reset_stale_jobs_dry_run_passes_through():
+    from pdr_run.cli.runner import main
+
+    with patch('sys.argv', ['pdr_run', '--reset-stale-jobs', '--dry-run']), \
+         patch('pdr_run.database.db_manager.get_db_manager') as mock_get_db_manager, \
+         patch('pdr_run.database.queries.reset_stale_jobs', return_value=[]) as mock_reset:
+        mock_get_db_manager.return_value.create_tables.return_value = None
+        main()
+
+    _, kwargs = mock_reset.call_args
+    assert kwargs['dry_run'] is True
