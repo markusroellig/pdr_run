@@ -33,6 +33,62 @@ from pdr_run.utils.logging import (
 
 logger = logging.getLogger('dev')
 
+# Additive, nullable columns on pdr_model_jobs added after the table was
+# already in production use (grid-1 job-status / UV-continuum work). Keep
+# this list in sync with the corresponding Column() definitions in
+# pdr_run.database.models.PDRModelJob - it exists only because this project
+# has no migration framework (create_all() never ALTERs an existing table).
+# Only ever add nullable, no-default columns here; anything requiring a
+# real default, NOT NULL, or data backfill needs a proper migration tool.
+_PDR_MODEL_JOB_ADDITIVE_COLUMNS = [
+    ('run_status_converged', 'VARCHAR(20)'),
+    ('run_status_global_iterations', 'INTEGER'),
+    ('run_status_eps_final', 'FLOAT'),
+    ('run_status_tsearch_flagged_shells', 'INTEGER'),
+    ('run_status_chem_relaxed_calls', 'INTEGER'),
+    ('run_status_deferred_iterations', 'INTEGER'),
+    ('run_status_code_version', 'VARCHAR(100)'),
+    ('run_status_git_hash', 'VARCHAR(64)'),
+    ('uvcont_applied', 'BOOLEAN'),
+    ('uvcont_closure_ok', 'BOOLEAN'),
+    ('uvcont_error', 'TEXT'),
+]
+
+
+def ensure_additive_columns(engine) -> None:
+    """Add any missing additive PDRModelJob columns to an existing database.
+
+    ``Base.metadata.create_all()`` creates tables that don't exist yet, but
+    it never adds columns to a table that is already there. For a fresh
+    database this is a no-op (create_all() already created the full
+    ``pdr_model_jobs`` table, including these columns, from the ORM
+    model). For a database created before this change, this patches the
+    columns in with plain ``ALTER TABLE ... ADD COLUMN`` statements, which
+    is portable across SQLite/MySQL/PostgreSQL for nullable, no-default
+    columns. Safe to call repeatedly (skips columns that already exist)
+    and never raises - a failure here must not block model runs, it only
+    means the new status/uv-continuum fields stay unpopulated in the DB
+    (the run still succeeds; job_status classification and the HDF5
+    continuum group are unaffected).
+    """
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        if 'pdr_model_jobs' not in inspector.get_table_names():
+            return
+        existing = {c['name'] for c in inspector.get_columns('pdr_model_jobs')}
+        missing = [(name, ddl_type) for name, ddl_type in _PDR_MODEL_JOB_ADDITIVE_COLUMNS
+                   if name not in existing]
+        if not missing:
+            return
+        with engine.begin() as conn:
+            for name, ddl_type in missing:
+                logger.info(f"Adding column pdr_model_jobs.{name} ({ddl_type}) "
+                            "to existing database (additive migration)")
+                conn.execute(text(f"ALTER TABLE pdr_model_jobs ADD COLUMN {name} {ddl_type}"))
+    except Exception as exc:
+        logger.warning(f"Could not verify/add additive pdr_model_jobs columns: {exc}")
+
 
 class DatabaseManager:
     """Centralized database management with proper abstraction and security."""
@@ -651,6 +707,13 @@ class DatabaseManager:
 
             logger.info("Database table creation process finished.")
 
+            # create_all() only creates TABLES that don't exist yet; it never
+            # adds columns to a table that is already there. Patch in any
+            # additive, nullable PDRModelJob columns added since the DB was
+            # first created (there is no migration framework in this
+            # project - see ensure_additive_columns() docstring).
+            ensure_additive_columns(self.engine)
+
         except Exception as e:
             logger.error(f"Failed to create database tables: {e}", exc_info=True)
             raise
@@ -659,7 +722,7 @@ class DatabaseManager:
             if connection is not None:
                 connection.close()
                 logger.debug("Connection returned to pool after create_tables()")
-        
+
     def drop_tables(self) -> None:
         """Drop all database tables."""
         logger.warning("Dropping all database tables...")

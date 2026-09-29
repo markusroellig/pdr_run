@@ -4,6 +4,8 @@ import os
 import re
 import logging
 import datetime
+import shlex
+import signal
 import subprocess
 import shutil
 import tempfile
@@ -18,6 +20,7 @@ from pdr_run.io.file_manager import (
     create_dir, copy_dir, move_files, make_tarfile, get_digest
 )
 from pdr_run.database import get_db_manager
+from pdr_run.models.job_status import determine_job_status, SUCCESS_STATUSES
 # ... other imports ...
 
 # Removed the direct import of get_session, as it is replaced by get_db_manager().get_session()
@@ -487,71 +490,165 @@ def set_gridparam(zmetal, density, cmass, radiation, shieldh2):
     
     logger.info(f"Set grid parameters: {zmetal}, {density}, {cmass}, {radiation}, {shieldh2}")
 
-def run_pdr(job_id, tmp_dir='./', session=None):
+def _kill_process_group(proc, term_timeout=10, kill_timeout=30):
+    """Kill *proc*'s whole process group: SIGTERM, escalate to SIGKILL.
+
+    ``proc`` must have been started with ``start_new_session=True`` so it
+    is its own process group leader; killing only ``proc.pid`` would (as
+    the previous ``shell=True`` implementation did implicitly) leave any
+    children - in particular ``pdrexe`` itself when it is invoked via a
+    shell - running after the "kill".
+
+    Returns the process's exit code, or ``None`` if it could not be reaped
+    within *kill_timeout* seconds of SIGKILL (should not happen for a
+    normal process, but this must never hang the driver on a multi-node
+    grid run).
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return proc.poll()
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return proc.poll()
+    try:
+        return proc.wait(timeout=term_timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Process group {pgid} still alive {term_timeout}s "
+                       "after SIGTERM, sending SIGKILL")
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return proc.poll()
+    try:
+        return proc.wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        logger.error(f"Process group {pgid} did not die within "
+                     f"{kill_timeout}s of SIGKILL; giving up on reaping it")
+        return None
+
+
+def _store_run_status_fields(job, fields):
+    """Copy the numeric/text fields from job_status.determine_job_status()
+    onto *job*, skipping any column the connected database doesn't have
+    yet (see database.db_manager.ensure_additive_columns - this keeps the
+    function working against a not-yet-migrated database)."""
+    mapping = {
+        'converged': 'run_status_converged',
+        'global_iterations': 'run_status_global_iterations',
+        'eps_final': 'run_status_eps_final',
+        'tsearch_flagged_shells': 'run_status_tsearch_flagged_shells',
+        'chem_relaxed_calls': 'run_status_chem_relaxed_calls',
+        'deferred_iterations': 'run_status_deferred_iterations',
+        'code_version': 'run_status_code_version',
+        'git_hash': 'run_status_git_hash',
+    }
+    for key, attr in mapping.items():
+        if hasattr(job, attr):
+            setattr(job, attr, fields.get(key))
+        else:
+            logger.debug(f"PDRModelJob has no column '{attr}'; skipping "
+                        "(database not migrated, see ensure_additive_columns)")
+
+
+def run_pdr(job_id, tmp_dir='./', session=None, config=None):
     """Run the PDR model for a given job.
-    
+
     Args:
         job_id (int): Job ID
         tmp_dir (str): Temporary directory path
-        session (sqlalchemy.orm.Session, optional): Database session. If None, a 
+        session (sqlalchemy.orm.Session, optional): Database session. If None, a
             new session will be created and closed. Defaults to None.
+        config (dict, optional): Configuration dictionary. Reads
+            ``config['pdr']['max_walltime_s']`` (seconds; ``None``/absent
+            = no cap, i.e. unchanged pre-existing behaviour). On expiry
+            the pdrexe process group is killed and the job is classified
+            as 'timeout'.
+
+    The exit status is classified by
+    ``pdr_run.models.job_status.determine_job_status()`` from
+    ``pdroutput/run_status.json`` (preferred) or, failing that, from the
+    convergence line in ``pdroutput/TEXTOUT`` - a zero exit code alone no
+    longer means the model converged. See that module's docstring.
     """
     _session = session
     session_created_locally = False
-    
+
     if _session is None:
         _session = get_db_manager().get_session()
         session_created_locally = True
         logger.debug(f"run_pdr: Created local session for job {job_id}")
 
+    max_walltime_s = PDR_CONFIG.get('max_walltime_s')
+    if config and 'pdr' in config and 'max_walltime_s' in config['pdr']:
+        max_walltime_s = config['pdr']['max_walltime_s']
+
     try:
         job = _session.get(PDRModelJob, job_id)
-        
+
         if not job:
             raise ValueError(f"Job with ID {job_id} not found")
-        
+
         exe = job.executable
         model = job.model_name
-        
+
         with open(os.path.join('pdroutput', 'TEXTOUT'), 'w') as textout:
             now_start = datetime.datetime.now()
             print('Begin of PDR Job: ' + now_start.strftime("%Y-%m-%d %H:%M:%S"))
             print('Begin of PDR Job: ' + now_start.strftime("%Y-%m-%d %H:%M:%S"), file=textout)
             logger.info('Begin of PDR Job: ' + now_start.strftime("%Y-%m-%d %H:%M:%S"))
             print(' ', file=textout)
-            
+
             # Update job status in the database
             job.time_of_start = now_start
             update_job_status(job_id, 'running', _session)
-            
+
             try:
-                # Run the PDR model
-                p = subprocess.call(
-                    './' + exe.executable_file_name,
-                    stdout=textout,
-                    stderr=textout,
-                    shell=True
+                # Run the PDR model in its own process group. Not
+                # shell=True: with shell=True the immediate child is
+                # /bin/sh, and killing it on a wall-time timeout leaves
+                # pdrexe itself running - see _kill_process_group().
+                cmd = shlex.split('./' + exe.executable_file_name)
+                timed_out = False
+                proc = subprocess.Popen(
+                    cmd, stdout=textout, stderr=textout, start_new_session=True
                 )
-                
-                if p == 0:
-                    logger.info("pdrexe finished without problems")
-                    job.status = 'finished'
+                try:
+                    returncode = proc.wait(timeout=max_walltime_s)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    logger.error(
+                        f"Job {job_id}: wall-time cap of {max_walltime_s}s "
+                        f"exceeded, killing process group (pid {proc.pid})")
+                    returncode = _kill_process_group(proc)
+
+                textout.flush()
+                status, fields = determine_job_status(
+                    returncode, timed_out, os.getcwd())
+                job.status = status
+                _store_run_status_fields(job, fields)
+
+                if status in SUCCESS_STATUSES:
+                    logger.info(
+                        f"pdrexe finished with status '{status}' (job {job_id})")
                 else:
-                    logger.error(f"There was a problem, subprocess.call returns: {p}")
-                    job.status = 'problem'
-                
+                    logger.error(
+                        f"pdrexe run classified as '{status}' for job {job_id} "
+                        f"(returncode={returncode}, timed_out={timed_out})")
+
                 print(' ', file=textout)
                 print(f'Output copied to directory {os.path.join(model.model_path, "pdrgrid")}', file=textout)
                 logger.info(f'Output copied to directory {os.path.join(model.model_path, "pdrgrid")}')
-                
+
                 now_end = datetime.datetime.now()
                 print('End of PDR Job: ' + now_end.strftime("%Y-%m-%d %H:%M:%S"))
                 print('End of PDR Job: ' + now_end.strftime("%Y-%m-%d %H:%M:%S"), file=textout)
                 logger.info('End of PDR Job: ' + now_end.strftime("%Y-%m-%d %H:%M:%S"))
-                
+
                 job.time_of_finish = now_end
                 update_job_status(job_id, job.status, _session)
-                
+
             except Exception as e:
                 logger.error(f"Unexpected error: {str(e)}", exc_info=True)
                 job.status = 'ERROR'
@@ -1103,6 +1200,134 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
             logger.debug(f"run_simline: Closed local session for job {job_id}")
 
 
+UV_CONTINUUM_TOOL_RELPATH = os.path.join('h2py', 'postprocess_uv_continuum.py')
+UV_CONTINUUM_CLOSURE_EXIT = 3
+
+
+def run_uv_continuum(job_id, tmp_dir='./', config=None, session=None):
+    """Append the H2 UV dissociation continuum to the local pdrstruct HDF5.
+
+    Wraps ``<kosma-tau checkout>/h2py/postprocess_uv_continuum.py``, which
+    appends 'Integrated quantities/Spectrum/UV Continuum/...' and a
+    provenance line under 'Parameters/Postprocessing' to
+    ``pdroutput/pdrstruct_s.hdf5`` IN PLACE (~5 s, ~0.7 GB RSS on a
+    grid-1 model). Called by ``run_kosma_tau`` right after ``run_pdr``,
+    i.e. before the onion loop, SIMLINE, and ``copy_pdroutput`` - all of
+    which read or copy that same file - so the stored/post-processed file
+    carries the continuum.
+
+    A photon-closure gate failure (tool exit code 3) leaves the HDF5 file
+    UNCHANGED (the tool's own contract, see its ``--help``) and is NOT
+    treated as an error here: the return value is False and
+    ``job.uvcont_closure_ok``/``job.uvcont_applied`` are set to False, but
+    no exception is raised. Any other non-zero exit is a genuine tool
+    error and raises ``RuntimeError``; the caller (``run_kosma_tau``)
+    decides whether that should fail the job (by default it does not -
+    see the try/except around this call there).
+
+    config['uv_continuum'] = {
+        'enabled':            bool (default False; checked by the caller),
+        'kosma_tau_dir':      str  (checkout containing h2py/), required,
+        'python_executable':  str  (default: the interpreter running pdr_run),
+        'timeout':            int  seconds (default 300),
+        'force':              bool (default False; passes --force),
+        'extra_args':         list[str] (optional passthrough args),
+    }
+
+    Returns:
+        bool: True if the continuum was written (closure within the
+        tool's gate), False if the closure gate rejected the write.
+
+    Raises:
+        ValueError: uv_continuum.kosma_tau_dir is not configured.
+        FileNotFoundError: the tool script or the model HDF5 is missing.
+        RuntimeError: the tool exited with a code other than 0 or 3.
+        subprocess.TimeoutExpired: the tool exceeded uv_continuum.timeout.
+    """
+    import sys as _sys
+
+    _session = session
+    session_created_locally = False
+    if _session is None:
+        _session = get_db_manager().get_session()
+        session_created_locally = True
+        logger.debug(f"run_uv_continuum: Created local session for job {job_id}")
+
+    try:
+        job = _session.get(PDRModelJob, job_id)
+        if not job:
+            raise ValueError(f"Job with ID {job_id} not found")
+
+        uv_cfg = (config or {}).get('uv_continuum', {}) or {}
+        kosma_tau_dir = uv_cfg.get('kosma_tau_dir')
+        if not kosma_tau_dir:
+            raise ValueError(
+                "uv_continuum.enabled is set but uv_continuum.kosma_tau_dir "
+                "is not configured")
+
+        tool = os.path.join(kosma_tau_dir, UV_CONTINUUM_TOOL_RELPATH)
+        if not os.path.isfile(tool):
+            raise FileNotFoundError(f"UV continuum tool not found: {tool}")
+
+        workdir = os.path.abspath(tmp_dir)
+        hdf5_path = os.path.join(workdir, 'pdroutput', 'pdrstruct_s.hdf5')
+        if not os.path.isfile(hdf5_path):
+            raise FileNotFoundError(
+                f"UV continuum step: model HDF5 not found: {hdf5_path}")
+
+        python_exe = uv_cfg.get('python_executable') or _sys.executable
+        cmd = [python_exe, tool, hdf5_path]
+        if uv_cfg.get('force'):
+            cmd.append('--force')
+        extra_args = uv_cfg.get('extra_args')
+        if extra_args:
+            cmd += list(extra_args)
+
+        # h2py must be importable by the tool's own subprocess - the
+        # driver's environment may not have it on PYTHONPATH.
+        env = os.environ.copy()
+        h2py_dir = os.path.join(kosma_tau_dir, 'h2py')
+        env['PYTHONPATH'] = os.pathsep.join(
+            [h2py_dir] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
+
+        log_path = os.path.join(workdir, 'pdroutput', 'TEXTOUT_UVCONT')
+        logger.info(f"Running UV continuum post-processing for job {job_id}: "
+                   f"{' '.join(cmd)}")
+        with open(log_path, 'w') as textout:
+            proc = subprocess.run(
+                cmd, cwd=workdir, stdout=textout, stderr=subprocess.STDOUT,
+                env=env, timeout=uv_cfg.get('timeout', 300))
+
+        closure_ok = True
+        if proc.returncode == UV_CONTINUUM_CLOSURE_EXIT:
+            closure_ok = False
+            logger.warning(
+                f"UV continuum photon-closure gate failed for job {job_id} "
+                f"(exit {UV_CONTINUUM_CLOSURE_EXIT}, file left unmodified, "
+                f"see {log_path}); model is NOT marked as failed")
+        elif proc.returncode != 0:
+            raise RuntimeError(
+                f"UV continuum post-processing exited with {proc.returncode} "
+                f"for job {job_id} (see {log_path})")
+        else:
+            logger.info(
+                f"UV continuum post-processing succeeded for job {job_id}")
+
+        if hasattr(job, 'uvcont_applied'):
+            job.uvcont_applied = closure_ok
+        if hasattr(job, 'uvcont_closure_ok'):
+            job.uvcont_closure_ok = closure_ok
+        if hasattr(job, 'uvcont_error'):
+            job.uvcont_error = None
+        _session.commit()
+
+        return closure_ok
+    finally:
+        if session_created_locally:
+            _session.close()
+            logger.debug(f"run_uv_continuum: Closed local session for job {job_id}")
+
+
 def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_simline=False):
     """Run the KOSMA-tau model workflow for a job.
 
@@ -1216,10 +1441,38 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
             pdr_skipped = True
         else:
             logger.info(f"Model doesn't exist, executing PDR code")
-            
+
             # Run PDR model
-            run_pdr(job_id, tmp_dir, session=_session) # Pass session
-        
+            run_pdr(job_id, tmp_dir, session=_session, config=config) # Pass session
+
+            # UV H2 dissociation continuum post-processing (opt-in via
+            # config['uv_continuum']['enabled']). Runs right after run_pdr,
+            # i.e. before the onion loop, SIMLINE, and copy_pdroutput below,
+            # so the stored/post-processed HDF5 carries the continuum. Only
+            # attempted for a run that actually produced a usable model
+            # (see job_status.SUCCESS_STATUSES).
+            uvcont_enabled = (config or {}).get('uv_continuum', {}).get('enabled', False)
+            if uvcont_enabled and job.status in SUCCESS_STATUSES:
+                try:
+                    run_uv_continuum(job_id, tmp_dir, config=config, session=_session)
+                except Exception as e:
+                    # A broken/misconfigured post-processing step must not
+                    # turn an already-successful physics model into a
+                    # failed grid node - log it and keep going. A closure
+                    # *gate* failure never reaches this except (see
+                    # run_uv_continuum docstring); only genuine tool
+                    # errors (missing deps, bad config, timeout) do.
+                    logger.error(
+                        f"UV continuum post-processing failed for job {job_id}: {e}",
+                        exc_info=True)
+                    if hasattr(job, 'uvcont_error'):
+                        job.uvcont_error = str(e)
+                        _session.commit()
+            elif uvcont_enabled:
+                logger.info(
+                    f"Skipping UV continuum post-processing for job {job_id}: "
+                    f"model status '{job.status}' is not a success status")
+
         # Run onion for each species if PDR was not skipped or force_onion is True
         if not pdr_skipped or force_onion:
             species = string_to_list(job.onion_species)

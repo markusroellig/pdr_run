@@ -113,6 +113,24 @@ PDR_CONFIG = {
     'chem_origin': 'UDfA12',
     'exe_revision': 'dev',
     'compilation_date': '2099-01-01',
+    # Wall-time cap per model run, in seconds. None (default) = no cap,
+    # i.e. unchanged pre-existing behaviour. On expiry the pdrexe process
+    # group is killed (SIGTERM, then SIGKILL) and the job is marked
+    # 'timeout'. See pdr_run.models.kosma_tau.run_pdr().
+    'max_walltime_s': None,
+}
+
+# UV H2 dissociation continuum post-processing (opt-in). Appends
+# 'Integrated quantities/Spectrum/UV Continuum/...' to the local
+# pdrstruct_s.hdf5 in place, before it is handed to SIMLINE or copied to
+# storage. See pdr_run.models.kosma_tau.run_uv_continuum().
+UV_CONTINUUM_CONFIG = {
+    'enabled': False,               # opt-in; checked by run_kosma_tau
+    'kosma_tau_dir': None,          # checkout containing h2py/ (required if enabled)
+    'python_executable': None,      # default: the interpreter running pdr_run
+    'timeout': 300,                 # seconds (tool itself runs in ~5 s)
+    'force': False,                 # pass --force to the tool (overwrite/re-run)
+    'extra_args': None,             # optional list of extra CLI args
 }
 # PDR_CONFIG = {
 #     'model_name': 'symlogtanh_stepper_test',

@@ -70,7 +70,8 @@ from datetime import datetime
 from pdr_run.core.engine import run_model, run_parameter_grid
 from pdr_run.config.default_config import (
     DEFAULT_PARAMETERS, non_default_parameters,
-    DATABASE_CONFIG, STORAGE_CONFIG, PDR_CONFIG, USER_CONFIG
+    DATABASE_CONFIG, STORAGE_CONFIG, PDR_CONFIG, USER_CONFIG,
+    UV_CONTINUUM_CONFIG
 )
 from pdr_run.config.logging_config import LOGGING_CONFIG
 from pdr_run.utils.logging import sanitize_yaml_content, sanitize_config
@@ -230,7 +231,13 @@ VALID_CONFIG_STRUCTURE = {
     'user': set(USER_CONFIG.keys()),
     'model_parameters': set(DEFAULT_PARAMETERS.keys()), # Canonical name
     'non_default_parameters': set(non_default_parameters.keys()), # Canonical name
-    'directories': {'pdr_out_dirs', 'pdr_inp_dirs'} # Assuming 'directories' is a valid top-level section
+    'directories': {'pdr_out_dirs', 'pdr_inp_dirs'}, # Assuming 'directories' is a valid top-level section
+    # SIMLINE RT post-processing (models/kosma_tau.py:run_simline). This was
+    # missing from VALID_CONFIG_STRUCTURE since it was introduced (4246aca),
+    # so a config.yaml with a top-level 'simline:' section would previously
+    # abort validation - added here together with 'uv_continuum' below.
+    'simline': {'enabled', 'species', 'simline_dir', 'config_file', 'timeout'},
+    'uv_continuum': set(UV_CONTINUUM_CONFIG.keys()),
 }
 
 def validate_config(config_to_validate):

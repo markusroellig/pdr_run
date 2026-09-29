@@ -233,7 +233,30 @@ class PDRModelJob(Base):
     time_created = Column(DateTime(timezone=True), server_default=func.now())
     time_updated = Column(DateTime(timezone=True), onupdate=func.now())
 
-    
+    # Run-status fields populated by pdr_run.models.job_status from
+    # pdroutput/run_status.json (or, as a fallback, parsed from the
+    # TEXTOUT convergence line). All nullable/additive. Databases created
+    # before this change need pdr_run.database.db_manager.ensure_additive_columns()
+    # (called automatically at the end of create_tables()) to gain these
+    # columns - Base.metadata.create_all() never alters an existing table.
+    run_status_converged = Column(String(20), nullable=True)
+    run_status_global_iterations = Column(Integer, nullable=True)
+    run_status_eps_final = Column(Float, nullable=True)
+    run_status_tsearch_flagged_shells = Column(Integer, nullable=True)
+    run_status_chem_relaxed_calls = Column(Integer, nullable=True)
+    run_status_deferred_iterations = Column(Integer, nullable=True)
+    run_status_code_version = Column(String(100), nullable=True)
+    run_status_git_hash = Column(String(64), nullable=True)
+
+    # UV H2 dissociation continuum post-processing outcome (see
+    # pdr_run.models.kosma_tau.run_uv_continuum). uvcont_applied is False
+    # when the tool's photon-closure gate rejected the write (exit 3, file
+    # left unmodified) - that case does NOT mark the job itself as failed.
+    uvcont_applied = Column(Boolean, nullable=True)
+    uvcont_closure_ok = Column(Boolean, nullable=True)
+    uvcont_error = Column(Text, nullable=True)
+
+
     # Relationships
     model_name = relationship("ModelNames")
     user = relationship("User", back_populates="jobs")

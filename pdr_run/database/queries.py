@@ -18,6 +18,7 @@ from pdr_run.database.models import (
     ModelNames, User, KOSMAtauExecutable, ChemicalDatabase,
     KOSMAtauParameters, PDRModelJob, HDFFile
 )
+from pdr_run.models.job_status import ALL_STATUSES as _JOB_STATUS_ALL_STATUSES
 
 logger = logging.getLogger('dev')
 
@@ -306,7 +307,11 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
     if status == 'running':
         job.active = True
         job.pending = False
-    elif status in ['finished', 'error', 'skipped', 'exception']:
+    elif status in ['finished', 'error', 'skipped', 'exception',
+                     # legacy PDR-run terminal statuses (models/kosma_tau.py)
+                     'problem', 'ERROR', 'failed_storage',
+                     # pdr_run.models.job_status.determine_job_status() outcomes
+                     *_JOB_STATUS_ALL_STATUSES]:
         job.active = False
         job.pending = False
 
