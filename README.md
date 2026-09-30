@@ -4,6 +4,7 @@ This document provides instructions for installing, configuring, and testing the
 
 ## Table of Contents
 - [Installation](#installation)
+- [Preflight Check](#preflight-check)
 - [Configuration](#configuration)
   - [Configuration Precedence](#configuration-precedence)
   - [Database Configuration](#database-configuration)
@@ -72,6 +73,70 @@ pdr_run --model-name test_install --dry-run --single --dens 3.0 --chi 1.0
 # 4. Check logs
 ls -la logs/
 ```
+
+## Preflight Check
+
+`pdr_run --check` verifies the whole set-up of a production run in a few seconds and prints one
+line per check. It is the compact alternative to `--dry-run`, which dumps the full configuration
+and log.
+
+```bash
+pdr_run --check --config my_config.yaml                    # human-readable report
+pdr_run --check-json --config my_config.yaml               # same results as JSON (for scripts)
+pdr_run --check --config my_config.yaml --min-free-gb 50   # disk-space WARN threshold (default 20)
+pdr_run --check --config my_config.yaml --check-timeout 10 # per network check (default 5 s)
+```
+
+`python -m pdr_run.cli.runner --check ...` is equivalent (`pdr_run` is the console script).
+`--workers`, `--cpus`, `--species`, `--json-template` and `--force-simline` are honoured so that
+the check sees what the real run would see.
+
+What is checked (`name` as shown in the report):
+
+| Group | Checks |
+|---|---|
+| Configuration | `config.file` (loaded? no `pdr:` section means the runner discards the file), `config.sections` (unknown sections abort a run), `config.env` (which `PDR_*` variables override the file, and which the code silently IGNORES because the file defines that section), `config.secrets` (password set/not set; values are never printed), `python.imports` |
+| KOSMA-tau install | `kt.base_dir`, `kt.rundir_write` (probe file), `kt.exe.pdr/onion/getctrlind/mrt` (exist + executable), `kt.pdr_version` (`pdrexe --version`, `-dirty` is a WARN), `kt.input_dirs` (symlinks resolve) |
+| Templates and inputs | `tpl.json` (found, placeholders substituted as in a real job, parsed with json-fortran-style comments), `tpl.chem_network`, `tpl.binding_energies`, `tpl.fuv_file` (only if `ifuvtype` 5/6) |
+| Scratch and disk | `tmp.dir` (writable), `disk.free` (per filesystem, WARN below `--min-free-gb`) |
+| Storage | `storage` (local, sftp or rclone: write probe, read back, compare, delete; latency) |
+| Database | `db.connect` (+ server version), `db.tables`, `db.columns`, `db.additive_columns` (the 11 run-status / UV-continuum columns), `db.rows`, `db.stale_jobs`, `db.write_rollback` (INSERT rolled back) |
+| Post-processing | `post.onion` (`ONION3.INP.<species>` for every species), `post.uv_continuum` (`kosma_h2` importable, data files), `post.simline` (driver, binary, molecules, config) |
+| Resources | `run.walltime` (WARN if `pdr.max_walltime_s` is unset), `run.workers` (workers, CPUs, RAM, MySQL `max_connections`) |
+
+`--check` is read-only: it never calls `create_tables()` or `ensure_additive_columns()` and never
+creates a missing database file or storage directory. A missing column is a FAIL with the hint
+that a normal run would add it. The only side effects are probe files / one rolled-back INSERT,
+which are removed even when a check fails. Each check is isolated (an exception becomes a FAIL
+line for that check only) and every network check has a timeout. During the check the console log
+is suppressed; the detailed log still goes to `logs/pdr_run.log` (the footer prints the path).
+
+Example (sandbox-like set-up with an old database that lacks a column):
+
+```
+[PASS] config.file           /tmp/ex/cfg.yaml (4 sections)
+[PASS] config.env            no PDR_* environment overrides set
+[PASS] config.secrets        DB password NOT set (values never printed); storage password not set
+[PASS] kt.exe.pdr            mockpdr
+[PASS] kt.pdr_version        Mock PDR executable running...
+[PASS] tpl.json              /tmp/ex/rundir/templates/pdr_config.json.template (placeholders substituted…
+[PASS] storage               local /tmp/ex/store: write/read/compare/delete OK (0 ms)
+[PASS] disk.free             run dir+temp dir+storage+sqlite db+log dir 80 GB free (min 20 GB)
+[PASS] db.connect            sqlite 3.49.1 at /tmp/ex/pdr.db (1 ms)
+[PASS] db.tables             all 9 expected tables present
+[FAIL] db.additive_columns   1/11 additive column(s) missing on pdr_model_jobs: uvcont_error - a normal run adds them (ensure_additive_columns); --check does not
+[PASS] db.write_rollback     INSERT + rollback OK, no residue (1 ms)
+[SKIP] post.uv_continuum     uv_continuum.enabled is false
+[PASS] run.walltime          max_walltime_s=21600 s (6.0 h); stale threshold 9.0 h
+  ... (about 32 lines in total)
+
+Summary: 27 PASS, 1 WARN, 1 FAIL, 3 SKIP in 2.1 s -> NOT READY
+Config: /tmp/ex/cfg.yaml | detailed log: /tmp/ex/logs/pdr_run.log | 0 WARNING+ log message(s) suppressed on screen
+```
+
+Exit codes: `0` nothing FAILed (WARN and SKIP are fine), `1` at least one FAIL. With `--check-json`
+the object has `ok`, `summary` (counts), `checks` (`name`, `status`, `detail`, `elapsed_s`),
+`config_file`, `log_files`.
 
 ## Configuration
 

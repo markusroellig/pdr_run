@@ -45,6 +45,9 @@ Parameters:
     --random: Generate random parameter sets instead of grid
     --force-onion: Force running onion even if PDR model was skipped
     --json-template: Path to a JSON parameter template file to use for this run
+    --check: Preflight check of files, storage, database and post-processing;
+             concise PASS/WARN/FAIL report, exit code 1 if anything FAILs
+    --check-json: Same, as JSON (see pdr_run/cli/preflight.py)
 
 Environment Variables:
     PDR_STORAGE_TYPE: Storage backend type
@@ -87,6 +90,19 @@ def parse_arguments():
     # Configuration file
     parser.add_argument('--config', type=str, help='Configuration file path')
     
+    # Preflight check: fast, concise, non-destructive verification of files,
+    # storage, database and post-processing set-up (see cli/preflight.py).
+    parser.add_argument('--check', action='store_true',
+                        help='Run the preflight check (config, KOSMA-tau install, templates, '
+                             'disk, storage, database, post-processing), print a compact '
+                             'PASS/WARN/FAIL report and exit (0 = no FAIL, 1 = FAIL)')
+    parser.add_argument('--check-json', '--json', dest='check_json', action='store_true',
+                        help='Preflight check with JSON output (implies --check)')
+    parser.add_argument('--min-free-gb', type=float, default=20.0,
+                        help='Preflight: WARN if a filesystem has less free space (default 20 GB)')
+    parser.add_argument('--check-timeout', type=float, default=5.0,
+                        help='Preflight: timeout in seconds for each network check (default 5)')
+
     # Add dry-run option
     parser.add_argument('--dry-run', action='store_true', 
                         help='Display configuration and exit without running models')
@@ -357,13 +373,22 @@ def print_configuration(params, model_name, config, parallel=False, n_workers=No
 
 def main():
     """Main entry point for the PDR run CLI."""
+    # Preflight check: parse first and dispatch before anything is logged,
+    # so that the report is not mixed with start-up log lines.
+    args = parse_arguments()
+    if args.check or args.check_json:
+        from pdr_run.cli.preflight import run_preflight
+        sys.exit(run_preflight(
+            config_path=args.config, json_output=args.check_json,
+            min_free_gb=args.min_free_gb, timeout=args.check_timeout,
+            json_template=args.json_template, workers=args.workers, cpus=args.cpus,
+            force_simline=args.force_simline, species=args.species))
+
     start_time = datetime.now()
     logger.info(f"========== PDR RUN STARTED AT {start_time.strftime('%Y-%m-%d %H:%M:%S')} ==========")
     logger.info(f"Python version: {sys.version}")
     logger.info(f"Working directory: {os.getcwd()}")
     
-    # Parse arguments
-    args = parse_arguments()
     logger.info(f"Command-line arguments: {vars(args)}")
     
     # Load config if provided
