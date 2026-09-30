@@ -6,7 +6,6 @@ import os
 import shutil
 import sqlite3
 import sys
-import textwrap
 
 import pytest
 import yaml
