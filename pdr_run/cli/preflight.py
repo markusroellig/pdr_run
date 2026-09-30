@@ -284,6 +284,7 @@ def _build_effective_config(ctx: Ctx) -> None:
 
 
 def _pdr_cfg(ctx: Ctx, key: str):
+    from pdr_run.config.default_config import PDR_CONFIG
     val = (ctx.eff.get('pdr') or {}).get(key)
     return PDR_CONFIG.get(key) if val is None else val
 
