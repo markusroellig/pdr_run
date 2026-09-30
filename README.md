@@ -16,7 +16,20 @@ This document provides instructions for installing, configuring, and testing the
 - [Resource Management](#resource-management)
 - [Comparing with Example Script](#comparing-with-example-script)
 - [Advanced Usage](#advanced-usage)
+- [Run Status and Exit Handling](#run-status-and-exit-handling)
+  - [Job states](#job-states)
+  - [Database columns](#database-columns)
+- [Wall-Time Cap](#wall-time-cap)
+- [Stale-Job Recovery](#stale-job-recovery)
+- [Storage Retries](#storage-retries)
+  - [Placeholder checksums](#placeholder-checksums)
+- [Post-Processing Steps](#post-processing-steps)
+  - [UV continuum](#uv-continuum)
+  - [ONION](#onion)
+  - [SIMLINE](#simline)
+- [Production Grid Run](#production-grid-run)
 - [Troubleshooting](#troubleshooting)
+  - [Known Limitations](#known-limitations)
 
 ## Installation
 
@@ -567,6 +580,432 @@ export PDR_DB_TYPE=mysql PDR_STORAGE_TYPE=sftp
 pdr_run --config production.yaml --model-name prod_run
 ```
 
+## Run Status and Exit Handling
+
+`pdrexe` exits with status 0 both when the global iteration converged and when it did not (many aborts
+are a plain Fortran `STOP`). pdr_run therefore does not trust the exit code alone.
+`pdr_run.models.job_status.determine_job_status()` classifies every run, in this order:
+
+1. The wall-time cap fired (see [Wall-Time Cap](#wall-time-cap)) -> `timeout`.
+2. `pdrexe` returned a non-zero exit code (any value, also a negative one from a signal) -> `aborted`.
+3. `pdroutput/pdrstruct_s.hdf5` does not exist -> `missing_output`.
+4. Otherwise the convergence outcome is read from **`pdroutput/run_status.json`** if that file exists.
+   If it is absent or unparsable (a warning is logged, the run is not aborted), the fallback is one of
+   three fixed lines in `pdroutput/TEXTOUT` (the captured screen output):
+   `Model CONVERGED in N iterations (eps=...)`,
+   `Model CONVERGED in N iterations (relaxed eps=..., strict eps=...)`,
+   `Model NOT CONVERGED after N iterations (eps=...)`.
+   If neither source gives a result (e.g. an older `pdrexe`), the job is `finished`, i.e. the legacy
+   exit-code-only behaviour, and a warning is logged.
+
+pdr_run reads only `run_status.json` and `TEXTOUT`. It does not open the HDF5 group
+`/Parameters/Run status` of the model file.
+
+Fields understood in `run_status.json` (all optional): `converged`, `global_iterations`, `eps_final`,
+`tsearch_flagged_shells`, `chem_relaxed_calls`, `deferred_iterations`, `code_version`, `git_hash`.
+`converged` must be one of the strings `strict`, `relaxed` or `no` (the values the TEXTOUT fallback
+produces); any other value is logged and treated as `finished`.
+
+### Job states
+
+| `status` | Meaning | Post-processing (UV continuum) |
+|---|---|---|
+| `finished` | converged (`strict`), no flagged shells (or legacy fallback, see above) | yes |
+| `finished_relaxed` | converged only under the relaxed criterion (`converged = relaxed`) | yes |
+| `flagged` | converged, but `tsearch_flagged_shells > 0` (temperature search flagged shells) | yes |
+| `not_converged` | `converged = no`; wins over `flagged` | no |
+| `aborted` | `pdrexe` exit code != 0 | no |
+| `missing_output` | exit code 0, but no `pdrstruct_s.hdf5` | no |
+| `timeout` | wall-time cap exceeded, process group killed | no |
+
+Other values written by the framework: `running` (`active` = true), `skipped` (model already exists in
+storage, see below), `ERROR` (exception while running `pdrexe`), `exception` and `exception_runtime` /
+`exception_setup_outer` (exception in the worker), `failed_storage` (exception while storing results),
+`reset_stale` (see [Stale-Job Recovery](#stale-job-recovery)) and the legacy `problem`. Every one of these
+except `running` clears the `active` and `pending` flags of the job row.
+
+### Database columns
+
+`pdr_model_jobs` carries 11 additive, nullable columns (list `_PDR_MODEL_JOB_ADDITIVE_COLUMNS` in
+`pdr_run/database/db_manager.py`, same columns as `PDRModelJob` in `pdr_run/database/models.py`):
+
+| Column | Type | Meaning |
+|---|---|---|
+| `run_status_converged` | VARCHAR(20) | `strict`, `relaxed` or `no` |
+| `run_status_global_iterations` | INTEGER | number of global iterations |
+| `run_status_eps_final` | FLOAT | final convergence measure (TEXTOUT fallback: the strict eps in the relaxed case) |
+| `run_status_tsearch_flagged_shells` | INTEGER | shells flagged by the temperature search |
+| `run_status_chem_relaxed_calls` | INTEGER | chemistry calls accepted under the relaxed criterion |
+| `run_status_deferred_iterations` | INTEGER | deferred iterations (from `run_status.json` only) |
+| `run_status_code_version` | VARCHAR(100) | `pdrexe` version string (JSON only) |
+| `run_status_git_hash` | VARCHAR(64) | `pdrexe` git hash (JSON only) |
+| `uvcont_applied` | BOOLEAN | UV continuum was written to the model file |
+| `uvcont_closure_ok` | BOOLEAN | photon-closure gate of the UV continuum tool passed |
+| `uvcont_error` | TEXT | error message of the UV continuum step, if it failed |
+
+The TEXTOUT fallback fills only `converged`, `global_iterations` and `eps_final`; the other `run_status_*`
+columns stay NULL. For `aborted`, `missing_output` and `timeout` all `run_status_*` columns are NULL.
+
+`ensure_additive_columns(engine)` adds any of these columns that is missing to an existing table with
+`ALTER TABLE ... ADD COLUMN` (portable across SQLite, MySQL and PostgreSQL). It is called at the end of
+`create_tables()`, so both a normal run and `--reset-stale-jobs` migrate an old database automatically; a
+fresh database gets the columns from `create_all()`. It never raises: on failure a warning is logged and
+the columns stay unpopulated. `pdr_run --check` does not migrate; it reports the missing columns
+(`db.additive_columns`).
+
+### How a failed or non-converged model shows up
+
+pdr_run itself does not exit non-zero because a grid node failed (it exits 1 only for an unknown
+configuration section, a failed preflight, and the like). The outcome is in the database; the columns to
+look at are `status`, `active`, `pending`, `run_status_*`, `uvcont_*`, `time_of_start`, `time_of_finish`:
+
+```sql
+-- overview of a grid
+SELECT status, COUNT(*) FROM pdr_model_jobs GROUP BY status;
+
+-- everything that needs attention
+SELECT id, model_job_name, status, run_status_converged, run_status_global_iterations,
+       run_status_eps_final, uvcont_error
+FROM pdr_model_jobs
+WHERE status NOT IN ('finished', 'finished_relaxed', 'skipped');
+```
+
+A model that did not converge (`not_converged`) or was flagged still goes through ONION and result storage,
+so its files are stored for inspection; only the UV continuum step is restricted to the success states
+(`finished`, `finished_relaxed`, `flagged`). Nodes are never retried automatically.
+
+Caveat (from reading `run_kosma_tau`, not exercised in a run): ONION and SIMLINE follow `pdrexe` without
+looking at the classification, and ONION needs `pdroutput/CTRL_IND`. For `aborted`, `timeout` and
+`missing_output` jobs, where `pdrexe` produced no such file, the ONION step therefore raises and the worker
+overwrites the status with `exception_runtime`; the classification survives only in the log
+(`pdrexe run classified as '...'`) and in the NULL `run_status_*` columns. Include `exception_runtime` when
+looking for failed nodes.
+
+## Wall-Time Cap
+
+`pdr.max_walltime_s` (seconds, default `None` = no cap) limits the run time of each `pdrexe`. The value is
+read by `run_pdr()` from the `pdr` section of the config file (default from `PDR_CONFIG`). `pdrexe` is
+started in its own session (`start_new_session=True`, no shell), and `Popen.wait(timeout=max_walltime_s)`
+is used. On expiry the whole process group is sent `SIGTERM`; if it is still alive after 10 s it gets
+`SIGKILL`, and pdr_run waits up to 30 s more to reap it. The run is then classified `timeout` (no other
+source is consulted), the error `wall-time cap of ...s exceeded, killing process group` is logged, and the
+worker moves on. Note the caveat under
+[How a failed or non-converged model shows up](#how-a-failed-or-non-converged-model-shows-up): the final
+status of a timed-out job may be `exception_runtime`. The cap applies to `pdrexe` only, not to ONION, SIMLINE (own
+`simline.timeout`, default 3600 s) or the UV continuum (own `uv_continuum.timeout`, default 300 s).
+
+```yaml
+pdr:
+  max_walltime_s: 21600   # 6 h per model
+```
+
+Choose the cap from the slowest node of the grid, not the average. `pdr_run --check` warns if it is unset
+(`run.walltime`). The cap also sets the default stale threshold (below).
+
+## Stale-Job Recovery
+
+A job that is `running` but whose driver process died (crash, reboot or power loss of the host, `kill -9`)
+never reaches a terminal status: `pdrexe` either finishes or hits the wall-time cap while the driver lives,
+so a `running` row long after any possible run time is abandoned. Such rows keep `active = true`.
+
+```bash
+pdr_run --reset-stale-jobs --dry-run --config my_config.yaml   # only report
+pdr_run --reset-stale-jobs --config my_config.yaml             # set status 'reset_stale', active/pending = false
+pdr_run --reset-stale-jobs --stale-after-hours 12 --config my_config.yaml
+```
+
+- `find_stale_jobs()` (`pdr_run/database/queries.py`) selects rows with `status = 'running'` and
+  `time_of_start` older than the threshold. Rows with `time_of_start` NULL are never selected.
+- Threshold, in order: `--stale-after-hours` (hours); otherwise `1.5 * pdr.max_walltime_s`; otherwise
+  `DEFAULT_STALE_AFTER_S` = 6 h. `--stale-after-hours` accepts fractions.
+- `reset_stale_jobs()` only marks the rows (`reset_stale`, `active = false`, `pending = false`). It creates
+  no replacement job and leaves the old row in place. The action runs and exits; no model is started.
+- Every grid run also calls `find_stale_jobs()` after creating its job entries and only logs a warning
+  (never fails); resetting is always an explicit operator action, so a job of a concurrent, unrelated
+  pdr_run invocation is not touched behind your back.
+- Use it after a crash or reboot of the host, **when no pdr_run of that database is still running**. If
+  another driver runs on the same database with long nodes, set the threshold above the longest node.
+- To recompute the reset nodes, run the same grid command again (see
+  [Rerun failed nodes](#8-rerun-failed-nodes)).
+
+## Storage Retries
+
+Remote storage backends retry transient errors with bounded exponential backoff
+(`pdr_run/utils/retry.py`, `retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0)`): 1 initial
+attempt plus 3 retries, waiting 2 s, 4 s and 8 s. Each failed attempt is logged as a WARNING, the final
+failure as an ERROR.
+
+| Backend | Retried operations | Retried errors |
+|---|---|---|
+| SFTP | `store_file`, `retrieve_file`, `list_files`, `file_exists` | `paramiko.SSHException`, socket errors and timeouts, `ConnectionError`, `OSError`, `EOFError` |
+| rclone | `store_file` (mkdir + copyto), `retrieve_file`, `list_files`, `sync_directory`, `file_exists` | `SubprocessError`, `RuntimeError`, `OSError` |
+
+For rclone `file_exists`, only a stderr that looks like a transport problem (`timeout`, `connection
+refused`, `no such host`, ...) is retried; an ordinary "path not found" is the normal answer for a node not
+yet computed and is not retried. The local backend does not retry.
+
+When the retries are exhausted, `store_file` keeps its old contract and **returns `False`** instead of
+raising (`file_exists` returns `False`, treating the file as absent). Callers in `pdr_run.models.kosma_tau`
+(`copy_pdroutput`, `copy_onionoutput`, `run_simline`) do not check this return value, so a store that
+failed after all retries is visible only as an ERROR in the log; the job status is not changed. Grep the
+log for `store_file failed after retries` / `Failed to upload file with rclone after retries` after a grid.
+`failed_storage` is set only when an exception (not a `False` return) escapes `copy_pdroutput`, and since
+that exception is re-raised, the worker then overwrites it with `exception_runtime`.
+
+### Placeholder checksums
+
+If a node's `pdrstruct<model>.hdf5` already exists in storage, the PDR step is skipped (status `skipped`)
+and `update_db_pdr_output_entries()` registers the file in table `hdf_files` (new entries; an existing entry only gets its paths updated) without
+downloading it. The
+`sha256_sum`, `sha256_sum_hdf5_s` and `sha256_sum_hdf5_c` columns then contain the constant
+`UNVERIFIED:no-local-hash-model-skipped-exists-remotely` (`UNVERIFIED_CHECKSUM_SENTINEL` in
+`pdr_run/models/kosma_tau.py`), never a hash. A real digest is 64 lowercase hex characters, so the
+placeholder cannot be mistaken for one and any comparison against it fails visibly. The `file_size*`
+columns are the real size for local storage and `0` for SFTP/rclone (logged as "without a verified size or
+checksum"). Find such rows with:
+
+```sql
+SELECT id, file_name FROM hdf_files WHERE sha256_sum LIKE 'UNVERIFIED:%';
+```
+
+## Post-Processing Steps
+
+Order inside one job (`run_kosma_tau`): `pdrexe` -> UV continuum (optional) -> ONION per species ->
+SIMLINE (optional) -> result storage (`copy_pdroutput`). ONION and SIMLINE read the local
+`pdroutput/pdrstruct_s.hdf5`, so the file stored under `pdrgrid/` already contains their additions. If the
+model already exists in storage (`skipped`), nothing of this runs unless forced.
+
+### UV continuum
+
+Adds the H2 dissociation continuum to the model file in place (about 5 s and 0.7 GB RSS per model, see the
+`kosma_h2` documentation in the KOSMA-tau repository). Opt-in:
+
+```yaml
+uv_continuum:
+  enabled: true
+  kosma_tau_dir: /path/to/kosma-tau      # checkout containing h2py/; required
+  python_executable: /path/to/python     # default: the interpreter running pdr_run
+  timeout: 300                           # seconds (default)
+  force: false                           # pass --force to the tool
+  extra_args: []                         # extra CLI arguments, appended
+```
+
+- The tool is `<kosma_tau_dir>/h2py/postprocess_uv_continuum.py <workdir>/pdroutput/pdrstruct_s.hdf5`. It runs
+  with `PYTHONPATH=<kosma_tau_dir>/h2py:$PYTHONPATH`, so `kosma_h2` is importable without changing the driver
+  environment. The chosen `python_executable` needs `numpy` and `h5py`.
+- Only jobs in a success state (`finished`, `finished_relaxed`, `flagged`) are processed.
+- Output: the datasets `Integrated quantities/Spectrum/UV Continuum/...` and a provenance line under
+  `Parameters/Postprocessing` inside `pdrstruct_s.hdf5` (stored as `pdrgrid/pdrstruct<model>.hdf5`); the
+  tool log is `pdroutput/TEXTOUT_UVCONT` in the temporary job directory (removed with it unless `--keep-tmp`).
+- Exit code 0 -> `uvcont_applied = uvcont_closure_ok = true`. Exit code 3 (photon-closure gate rejected the
+  write; file unchanged) -> both `false`, the job is **not** failed, a warning is logged. Any other exit code,
+  a missing tool or model file, a missing `kosma_tau_dir` or a timeout -> the exception text is written to
+  `uvcont_error`, the model stays in its physics status and the grid continues. `uvcont_error` is reset to
+  NULL on success.
+
+### ONION
+
+Runs for every species of the job (`--species`, `model_parameters.species`; default list in
+`pdr_run/config/default_config.py`). For each species `set_oniondir()` copies
+`<pdr.base_dir>/onioninpdata/ONION3.INP.<species>` to `ONION3.INP`; a missing file raises and fails the
+job (status `exception_runtime`), after `pdrexe` has already run. Check the species list against `onioninpdata/`
+before starting (`pdr_run --check`, `post.onion`). Results go to
+`<model_path>/oniongrid/ONION<model>.<file>` for `jerg_`, `jtemp_`, `linebt_` and `ONION3_<species>.OUT`
+files plus `TEXTOUT<model>_<species>`. The ONION exit status is not evaluated.
+`--force-onion` also runs ONION for a skipped node.
+
+### SIMLINE
+
+Radiative-transfer post-processing through `<simline_dir>/python/run_simline.py`. Opt-in per config or per
+run:
+
+```yaml
+simline:
+  enabled: true
+  species: [CO, 13CO]        # optional; default: the pipeline's own simline_config.json
+  simline_dir: /path/to/kosma-tau/simline   # default: <pdr.base_dir>/simline
+  config_file: /path/to/simline_config.json # default: <simline_dir>/python/simline_config.json
+  timeout: 3600              # seconds (default)
+```
+
+```bash
+pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose PDR step is skipped
+```
+
+- `--force-simline` runs SIMLINE even if `simline.enabled` is false and even if the model already exists in
+  storage; in that case the model file is fetched from storage (`pdrgrid/pdrstruct<model>.hdf5`), which makes
+  RT-only re-runs of an existing grid possible. Without the flag, a skipped node is not processed.
+- Input: a working copy `pdroutput/pdrstruct<model>_simline.hdf5` of the model file; the pipeline writes to
+  `simlineoutput/` (log: `TEXTOUT_SIMLINE`). The ONION results in `pdrgrid/` are not modified.
+- Output in storage: `<model_path>/simlinegrid/SIMLINE<model>.<file>` for every file in `simlineoutput/` and
+  `<model_path>/simlinegrid/pdrstruct<model>_simline.hdf5`.
+- A non-zero exit of the pipeline raises, so a SIMLINE failure marks the job `exception_runtime` even though the
+  physics model is complete. (`copy_pdroutput`, which stores the model files, runs after SIMLINE and is skipped
+  when SIMLINE raises, so with `simline.enabled` a SIMLINE failure also leaves that node without stored
+  results.) `pdr_run --check` verifies driver, binary, `obs.template`,
+  `molecules/` and the config (`post.simline`).
+
+## Production Grid Run
+
+Walkthrough for a tiered grid on one compute host with a MySQL database. Hostnames, paths and passwords
+below are placeholders.
+
+### 1. Deploy the branch
+
+```bash
+git clone <repository-url> pdr_run && cd pdr_run
+git checkout <production-branch>
+python3 -m venv venv && . venv/bin/activate
+pip install -e .            # installs the pdr_run console script
+pdr_run --help
+```
+
+### 2. Set the database password
+
+```bash
+export PDR_DB_PASSWORD='...'    # from a secrets store; never in the config file or the shell history
+```
+
+The variable overrides `database.password` of the config file (see [Database Configuration](#database-configuration)).
+
+### 3. Freeze the template and the binary
+
+Every job runs in a fresh temporary directory in which `pdrexe` is a **symlink** to
+`<pdr.base_dir>/<pdr.pdr_file_name>`, and `pdrinpdata/`, `onioninpdata/`, `In/` and `templates/` are copied
+from `pdr.base_dir` per job. A rebuild of `pdrexe` or an edit of the template during a multi-day grid would
+therefore change the model halfway. Freeze both before the start:
+
+```bash
+cd /path/to/pdr.base_dir
+cp /path/to/kosma-tau/pdrsrc/bin/main/pdrexe pdrexe_grid1_20260930   # pinned copy, unique name
+sha256sum pdrexe_grid1_20260930
+cp /path/to/frozen/pdr_config.json.template templates/pdr_config.json.template
+sha256sum templates/pdr_config.json.template
+chmod a-w pdrexe_grid1_20260930 templates/pdr_config.json.template
+```
+
+The `KOSMAtauExecutable` table records the file name, code revision, compilation date and SHA-256 of the
+executable, so the run stays traceable. Use `pdr.pdr_file_name` for the pinned copy; per-grid templates can
+also be passed with `--json-template`. Keep the hashes in your run notes.
+
+### 4. Run `pdr_run --check` until READY
+
+```bash
+pdr_run --check --config grid1.yaml --workers 8
+```
+
+Fix every FAIL and read every WARN (see [Preflight Check](#preflight-check)); repeat until the summary reads
+READY. Exit code 0 = no FAIL. Repeat the check after every change of config, template or binary.
+
+### 5. Start the grid
+
+```yaml
+# grid1.yaml
+database:
+  type: mysql
+  host: localhost
+  port: 3306
+  database: pdr_production
+  username: pdr_service
+  password: null              # PDR_DB_PASSWORD
+  pool_size: 5
+  max_overflow: 5
+
+storage:
+  type: local
+  base_dir: /data/pdr/models  # results: <base_dir>/<model_name>/pdrgrid, oniongrid, simlinegrid
+
+pdr:
+  model_name: grid1_tier0
+  base_dir: /path/to/pdr.base_dir
+  pdr_file_name: pdrexe_grid1_20260930
+  onion_file_name: onionexe
+  getctrlind_file_name: getctrlind
+  mrt_file_name: mrt.exe
+  json_template_file: pdr_config.json.template
+  chem_database: chem_rates_grid.dat
+  max_walltime_s: 21600
+
+uv_continuum:
+  enabled: true
+  kosma_tau_dir: /path/to/kosma-tau
+
+simline:
+  enabled: false
+
+model_parameters:
+  metal: ["100"]
+  dens: ["30", "40", "50"]
+  mass: ["5", "6"]
+  chi: ["1", "10", "100"]
+  species: [CO, C+, C]
+```
+
+```bash
+nohup pdr_run --grid --parallel --workers 8 --config grid1.yaml > grid1_tier0.out 2>&1 &
+```
+
+`--workers` is the number of worker processes (one `pdrexe` each); it is only used with `--parallel`. Without
+`--workers`, the count is the number of CPUs minus `reserved_cpus` (a `model_parameters` key, default 2);
+`--cpus` is accepted but only used by `--check`, not by a run. Size the workers to CPUs and RAM
+(`pdrexe` plus the ~0.7 GB of the UV continuum), and check that `workers * (pool_size + max_overflow)` does not
+exceed the MySQL `max_connections` (`run.workers` reports it). `--model-name` on the command line overrides
+`pdr.model_name`. `pdr_run` creates all job rows first (`pending = true`), then runs them.
+
+### 6. Monitor
+
+```bash
+tail -f logs/pdr_run.log                                    # detailed log (PDR_LOG_DIR changes the directory)
+mysql -u pdr_service -p pdr_production -e \
+  "SELECT status, COUNT(*) FROM pdr_model_jobs GROUP BY status"
+```
+
+Watch `running` (should not exceed `--workers`), the `timeout`, `aborted`, `not_converged` and `exception*`
+counts, and `time_of_start` of the oldest `running` job against `max_walltime_s`. The stored `TEXTOUT<model>`
+of a node (`pdrgrid/`) is the screen output of that model.
+
+### 7. Recover stale jobs after interruptions
+
+After a crash or reboot of the host, first make sure no `pdr_run` and no `pdrexe` of the grid is left
+(`pgrep -af pdr_run`, `pgrep -af pdrexe_grid1`), then:
+
+```bash
+pdr_run --reset-stale-jobs --dry-run --config grid1.yaml
+pdr_run --reset-stale-jobs --config grid1.yaml
+```
+
+See [Stale-Job Recovery](#stale-job-recovery). Then restart the same grid command (step 8).
+
+### 8. Rerun failed nodes
+
+Rerunning the same command (same `model_name` and parameter lists) creates new job rows for every node whose
+earlier row is no longer `pending` and skips (status `skipped`) every node whose
+`<model_path>/pdrgrid/pdrstruct<model>.hdf5` already exists in storage. Consequently:
+
+- Nodes that never produced a file (`aborted`, `timeout`, `missing_output`, `reset_stale`, exceptions before
+  storage) are recomputed by simply restarting the command.
+- Nodes that finished, but should be recomputed (`not_converged`, `flagged`, or after a change of
+  binary/template) are **skipped** while their `pdrstruct*.hdf5` exists. Move or delete that file (and the
+  matching `pdr*`, `pdrchem*` files) in storage first, or use a new `model_name`.
+- Skipped nodes get `UNVERIFIED:` placeholder checksums in `hdf_files` (see above).
+- To re-run a restricted set, restrict the parameter lists on the command line (`--dens`, `--chi`, ...
+  override the config file); `--single` runs one node.
+- A changed binary or template needs a new `pdr_file_name` / template and a new `pdr_run --check`.
+
+### 9. Where results and logs are
+
+| What | Where |
+|---|---|
+| Model files | `<storage.base_dir>/<model_name>/pdrgrid/`: `pdrstruct<model>.hdf5`, `pdrchem<model>.hdf5`, `pdr<model>.hdf` (if written), `TEXTOUT<model>`, `chemchk<model>.out`, `pdr_config<model>.json`, `CTRL_IND<model>`, `MCDRT<model>.tar.gz` |
+| ONION | `<model_name>/oniongrid/ONION<model>.*`, `TEXTOUT<model>_<species>` |
+| SIMLINE | `<model_name>/simlinegrid/SIMLINE<model>.*`, `pdrstruct<model>_simline.hdf5` |
+| Job table | `pdr_model_jobs` (status, run-status and UV continuum columns, file paths); `hdf_files` (paths, checksums, sizes) |
+| Driver log | `logs/pdr_run.log` (directory `PDR_LOG_DIR`, default `logs/`, relative to the working directory) and the redirected stdout |
+| Temporary job directories | `pdr-job<ID>-*` in the system temp directory, removed after the job unless `--keep-tmp` |
+
+`<model>` is `<metal>_<dens>_<mass>_<chi>_00`. With SFTP or rclone storage the same layout lives below the
+remote `base_dir`.
+
 ## Troubleshooting
 
 ### Running Tests
@@ -673,6 +1112,16 @@ make test-storage
 - Use `PDR_STORAGE_PASSWORD` environment variable for SFTP passwords
 - Check SFTP server logs for authentication issues
 - Verify network connectivity and firewall settings
+
+### Known Limitations
+
+Behaviour of the existing code that was found while writing the preflight check, and what could not be
+verified without the production host, is listed in
+[`docs/PREFLIGHT_FINDINGS_2026-09-30.md`](docs/PREFLIGHT_FINDINGS_2026-09-30.md). Also note:
+
+- `--cpus` and `--random` are accepted by the argument parser but have no effect on a run (`--cpus` is used
+  by `--check` only).
+- A failed storage upload (after all retries) is only logged, see [Storage Retries](#storage-retries).
 
 ### Checking Logs
 ```bash
