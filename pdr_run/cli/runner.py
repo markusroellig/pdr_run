@@ -71,6 +71,7 @@ import traceback  # Add this import
 from datetime import datetime
 
 from pdr_run.core.engine import run_model, run_parameter_grid
+from pdr_run.models.job_status import ALL_STATUSES, JOB_SUCCESS_STATES
 from pdr_run.config.default_config import (
     DEFAULT_PARAMETERS, non_default_parameters,
     DATABASE_CONFIG, STORAGE_CONFIG, PDR_CONFIG, USER_CONFIG,
@@ -82,6 +83,47 @@ from pdr_run.utils.logging import sanitize_yaml_content, sanitize_config
 # Configure logging
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger('dev')
+
+# Job states selectable with --rerun (besides 'all' and 'failed').
+RERUN_STATES = tuple(sorted(set(ALL_STATUSES) | {
+    'failed_storage', 'exception', 'exception_runtime', 'exception_setup_outer',
+    'ERROR', 'error', 'problem', 'reset_stale'}))
+
+# pdr_run exit codes
+EXIT_OK = 0            # every job ended in a success state
+EXIT_JOBS_FAILED = 1   # some jobs failed (or have a post-processing error)
+EXIT_RUN_ERROR = 2     # run-level error: no jobs ran / the run itself crashed
+
+
+def _rerun_argument(text):
+    """argparse type for --rerun: comma-separated states -> tuple."""
+    states = tuple(x.strip() for x in text.split(',') if x.strip())
+    valid = ('all', 'failed') + RERUN_STATES
+    bad = [x for x in states if x not in valid]
+    if not states or bad:
+        raise argparse.ArgumentTypeError(
+            f"invalid --rerun state(s) {bad or text!r}; choose from: {', '.join(valid)}")
+    return states
+
+
+def finish_run(job_ids):
+    """Print the one-line job-state summary of a run and return the exit code."""
+    if not job_ids:
+        logger.error("No jobs were run")
+        return EXIT_RUN_ERROR
+    from pdr_run.database.queries import summarize_job_states
+    counts, n_postproc = summarize_job_states(job_ids)
+    parts = [f"{n} {state}" for state, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if not counts.get('failed_storage'):
+        parts.append("0 failed_storage")
+    if n_postproc:
+        parts.append(f"{n_postproc} with post-processing errors")
+    line = f"Job states: {', '.join(parts)}"
+    print(line)
+    logger.info(line)
+    n_failed = sum(n for state, n in counts.items() if state not in JOB_SUCCESS_STATES)
+    return EXIT_JOBS_FAILED if (n_failed or n_postproc) else EXIT_OK
+
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -135,6 +177,14 @@ def parse_arguments():
     parser.add_argument('--force-simline', action='store_true',
                        help='Run SIMLINE post-processing, even if PDR model was skipped')
     
+    # Recompute nodes whose result is already stored (default: skip them)
+    parser.add_argument('--rerun', type=_rerun_argument, default=None, metavar='STATE[,STATE...]',
+                        help="Recompute existing nodes whose stored result has one of these "
+                             "job states instead of skipping them: 'all', 'failed' (every "
+                             "state that is not finished/finished_relaxed/flagged/skipped) "
+                             "or literal states such as not_converged, aborted, timeout, "
+                             "failed_storage. Default: existing nodes are skipped.")
+
     # Add keep-tmp option
     parser.add_argument('--keep-tmp', action='store_true',
                         help='Do not delete temporary directories after run (for debugging)')
@@ -382,7 +432,8 @@ def main():
             config_path=args.config, json_output=args.check_json,
             min_free_gb=args.min_free_gb, timeout=args.check_timeout,
             json_template=args.json_template, workers=args.workers, cpus=args.cpus,
-            force_simline=args.force_simline, species=args.species))
+            force_simline=args.force_simline, species=args.species,
+            rerun=args.rerun))
 
     start_time = datetime.now()
     logger.info(f"========== PDR RUN STARTED AT {start_time.strftime('%Y-%m-%d %H:%M:%S')} ==========")
@@ -575,6 +626,7 @@ def main():
         return
     
     # Execute models
+    exit_code = EXIT_RUN_ERROR   # stays 2 if the run itself raises
     try:
         if args.single:
             logger.info(f"Executing single model: {model_name}")
@@ -593,9 +645,11 @@ def main():
                 force_onion=args.force_onion,
                 force_simline=args.force_simline,
                 json_template=args.json_template,
-                keep_tmp=args.keep_tmp
+                keep_tmp=args.keep_tmp,
+                rerun=args.rerun
             )
             logger.info(f"Single model execution completed. Job ID: {job_id}")
+            exit_code = finish_run([job_id] if job_id is not None else [])
         else:
             # Grid execution
             if config is None or 'pdr' not in config:
@@ -612,9 +666,11 @@ def main():
                 force_onion=args.force_onion,
                 force_simline=args.force_simline,
                 json_template=args.json_template,
-                keep_tmp=args.keep_tmp
+                keep_tmp=args.keep_tmp,
+                rerun=args.rerun
             )
             logger.info(f"Parameter grid execution completed. Job IDs: {job_ids}")
+            exit_code = finish_run(job_ids)
             
     except Exception as e:
         logger.error(f"Error running model: {e}")
@@ -633,6 +689,9 @@ def main():
         total_run_time = (end_time - start_time).total_seconds()
         logger.info(f"========== PDR RUN COMPLETED AT {end_time.strftime('%Y-%m-%d %H:%M:%S')} ==========")
         logger.info(f"Total execution time: {total_run_time:.2f} seconds")
+
+    if exit_code != EXIT_OK:
+        sys.exit(exit_code)
 
 if __name__ == '__main__':
     main()

@@ -24,9 +24,13 @@ logger = logging.getLogger('dev')
 
 
 def retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                        exceptions=(Exception,)):
+                        exceptions=(Exception,), giveup=()):
     """Retry *func* up to ``max_retries`` times on ``exceptions``, with
     exponential backoff starting at ``initial_delay`` seconds.
+
+    Exceptions that are instances of ``giveup`` are never retried, even if
+    they are also instances of ``exceptions`` (e.g. ``FileNotFoundError`` is
+    an ``OSError``: it fails identically on every attempt).
 
     Re-raises the last exception once retries are exhausted, so callers
     that need to convert a persisting failure into a sentinel return value
@@ -41,6 +45,8 @@ def retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
                 try:
                     return func(*args, **kwargs)
                 except exceptions as exc:
+                    if giveup and isinstance(exc, giveup):
+                        raise
                     last_exc = exc
                     if attempt == max_retries:
                         logger.error(

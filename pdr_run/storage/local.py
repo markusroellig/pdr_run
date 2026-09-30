@@ -51,7 +51,16 @@ class LocalStorage(Storage):
         """
         full_path = os.path.join(self.base_dir, remote_path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        shutil.copy2(local_path, full_path)  # copy2 preserves file metadata
+        # Copy next to the target, then replace it, so that an interrupted
+        # copy never destroys an existing file (copy2 preserves metadata).
+        part_path = full_path + '.part'
+        try:
+            shutil.copy2(local_path, part_path)
+            os.replace(part_path, full_path)
+        except BaseException:
+            if os.path.exists(part_path):
+                os.remove(part_path)
+            raise
     
     def retrieve_file(self, remote_path, local_path):
         """Retrieve a file from local storage and copy it to a local destination.

@@ -23,6 +23,9 @@ from pdr_run.utils.retry import retry_with_backoff
 # and just waste a grid node's time.
 _SFTP_RETRYABLE = (paramiko.SSHException, socket.error, socket.timeout,
                     ConnectionError, OSError, EOFError)
+# FileNotFoundError and paramiko authentication errors are subclasses of the
+# retryable OSError/SSHException but are permanent: never retried.
+_SFTP_GIVEUP = (FileNotFoundError, paramiko.AuthenticationException)
 _RCLONE_RETRYABLE = (subprocess.SubprocessError, RuntimeError, OSError)
 
 # Set up logging
@@ -220,7 +223,7 @@ class SFTPStorage(RemoteStorage):
         self.logger.debug(f"Local file size: {file_size} bytes")
 
         @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_SFTP_RETRYABLE)
+                             exceptions=_SFTP_RETRYABLE, giveup=_SFTP_GIVEUP)
         def _attempt():
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -237,8 +240,19 @@ class SFTPStorage(RemoteStorage):
                 self._ensure_remote_directory(sftp, remote_dir)
 
                 # Upload file
+                # Write next to the target, then rename over it, so that an
+                # interrupted upload never destroys an existing file.
                 self.logger.debug(f"Starting file upload to {full_remote_path}")
-                sftp.put(local_path, full_remote_path)
+                part_path = full_remote_path + '.part'
+                try:
+                    sftp.put(local_path, part_path)
+                    sftp.posix_rename(part_path, full_remote_path)
+                except BaseException:
+                    try:
+                        sftp.remove(part_path)
+                    except Exception:  # noqa: BLE001 - best-effort cleanup
+                        pass
+                    raise
 
                 # Verify upload
                 try:
@@ -285,7 +299,7 @@ class SFTPStorage(RemoteStorage):
                 sftp.mkdir(directory)
     
     @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                         exceptions=_SFTP_RETRYABLE)
+                         exceptions=_SFTP_RETRYABLE, giveup=_SFTP_GIVEUP)
     def retrieve_file(self, remote_path, local_path):
         """Retrieve a file using SFTP.
 
@@ -312,7 +326,7 @@ class SFTPStorage(RemoteStorage):
             client.close()
 
     @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                         exceptions=_SFTP_RETRYABLE)
+                         exceptions=_SFTP_RETRYABLE, giveup=_SFTP_GIVEUP)
     def list_files(self, path):
         """List files using SFTP. Bounded retry on transient connection errors."""
         client = paramiko.SSHClient()
@@ -348,7 +362,7 @@ class SFTPStorage(RemoteStorage):
             bool: True if file exists, False otherwise
         """
         @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_SFTP_RETRYABLE)
+                             exceptions=_SFTP_RETRYABLE, giveup=_SFTP_GIVEUP)
         def _attempt():
             with paramiko.SSHClient() as ssh:
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())

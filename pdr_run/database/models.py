@@ -256,6 +256,10 @@ class PDRModelJob(Base):
     uvcont_closure_ok = Column(Boolean, nullable=True)
     uvcont_error = Column(Text, nullable=True)
 
+    # Failure of a post-processing step (ONION / SIMLINE) after a usable
+    # model; the model's own status is NOT changed by it. NULL = none.
+    postproc_error = Column(Text, nullable=True)
+
 
     # Relationships
     model_name = relationship("ModelNames")

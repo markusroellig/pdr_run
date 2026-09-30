@@ -52,6 +52,7 @@ _PDR_MODEL_JOB_ADDITIVE_COLUMNS = [
     ('uvcont_applied', 'BOOLEAN'),
     ('uvcont_closure_ok', 'BOOLEAN'),
     ('uvcont_error', 'TEXT'),
+    ('postproc_error', 'TEXT'),
 ]
 
 

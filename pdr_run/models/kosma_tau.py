@@ -20,7 +20,10 @@ from pdr_run.io.file_manager import (
     create_dir, copy_dir, move_files, make_tarfile, get_digest
 )
 from pdr_run.database import get_db_manager
-from pdr_run.models.job_status import determine_job_status, SUCCESS_STATUSES
+from pdr_run.models.job_status import (
+    determine_job_status, SUCCESS_STATUSES, COMPLETE_OUTPUT_STATUSES,
+    POSTPROCESS_STATUSES, STATUS_SKIPPED, RUN_STATUS_FILE,
+)
 # ... other imports ...
 
 # Removed the direct import of get_session, as it is replaced by get_db_manager().get_session()
@@ -552,6 +555,62 @@ def _store_run_status_fields(job, fields):
                         "(database not migrated, see ensure_additive_columns)")
 
 
+def _store(storage, local_path, remote_path):
+    """Store one file; True on success, False (logged) on any failure.
+
+    The storage backends signal a persisting failure after their retries
+    either by returning False (SFTP/rclone) or by raising (local); both
+    become False here so that callers can go on storing the remaining files
+    and report one ``failed_storage`` at the end.
+    """
+    try:
+        if storage.store_file(local_path, remote_path) is False:
+            logger.error(f"Storing {local_path} as {remote_path} failed after retries")
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Storing {local_path} as {remote_path} failed: {exc}")
+        return False
+
+
+def _mark_failed_storage(job_id, session, what):
+    """Give the job the terminal status 'failed_storage' (results could not
+    be stored after all retries). Nothing later in run_kosma_tau overwrites
+    it - only a genuinely unexpected exception does."""
+    job = session.get(PDRModelJob, job_id)
+    logger.error(f"Job {job_id}: storing {what} failed; status "
+                 f"'{job.status if job else None}' -> 'failed_storage'")
+    update_job_status(job_id, 'failed_storage', session)
+
+
+def _stored_result_status(session, job):
+    """Status of the most recent earlier job that computed this node (rows
+    that only skipped it or are still running do not count); None if the DB
+    knows no such job."""
+    prev = (session.query(PDRModelJob)
+            .filter(PDRModelJob.model_name_id == job.model_name_id,
+                    PDRModelJob.model_job_name == job.model_job_name,
+                    PDRModelJob.id != job.id,
+                    PDRModelJob.status.notin_([STATUS_SKIPPED, 'running', 'pending']))
+            .order_by(PDRModelJob.id.desc()).first())
+    return prev.status if prev else None
+
+
+def rerun_selects(stored_status, rerun):
+    """True if a node whose stored result has status *stored_status* is to be
+    recomputed for ``--rerun`` selection *rerun* (iterable of 'all',
+    'failed' = every non-success status, or literal job statuses)."""
+    from pdr_run.models.job_status import JOB_SUCCESS_STATES
+    if not rerun:
+        return False
+    if 'all' in rerun:
+        return True
+    if stored_status is None:
+        return False
+    return stored_status in rerun or (
+        'failed' in rerun and stored_status not in JOB_SUCCESS_STATES)
+
+
 def run_pdr(job_id, tmp_dir='./', session=None, config=None):
     """Run the PDR model for a given job.
 
@@ -660,7 +719,7 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
             _session.close()
             logger.debug(f"run_pdr: Closed local session for job {job_id}")
 
-def copy_pdroutput(job_id, config=None, session=None):
+def copy_pdroutput(job_id, config=None, session=None, model_status=None):
     """Copy PDR output files to the model directory.
     
     Args:
@@ -668,6 +727,16 @@ def copy_pdroutput(job_id, config=None, session=None):
         config (dict): Configuration dictionary
         session (sqlalchemy.orm.Session, optional): Database session. If None, a 
             new session will be created and closed. Defaults to None.
+        model_status (str, optional): the model's own status from the
+            KOSMA-tau run (default: the job's current status). Passed by
+            run_kosma_tau because a post-processing storage failure may
+            already have changed job.status to 'failed_storage'.
+
+    Returns:
+        bool: False if storing failed after all retries (the job then has
+        status 'failed_storage'), True otherwise. Result files are stored
+        only for complete outputs (job_status.COMPLETE_OUTPUT_STATUSES);
+        for other statuses only the logs/config are stored.
     """
     from pdr_run.storage.base import get_storage_backend
     
@@ -701,90 +770,73 @@ def copy_pdroutput(job_id, config=None, session=None):
         json_file_name = 'pdr_config' + model + '.json'
         ctrl_ind_file_name = 'CTRL_IND' + model
         
-        # Copy output files to the model directory with error handling
+        # Store what exists. Diagnostic files (TEXTOUT, run_status.json,
+        # pdrexe_error.log, the input config) are always stored so that the
+        # cause of a failure can be diagnosed. The result files (HDF4/HDF5,
+        # chemchk, MCDRT, CTRL_IND) only if the output is complete and valid
+        # (job_status.COMPLETE_OUTPUT_STATUSES): a partial pdrstruct file of a
+        # timed-out/aborted run must not look like a finished node.
+        model_status = model_status or job.status
+        complete = model_status in COMPLETE_OUTPUT_STATUSES
+        failures = []
+        pdrgrid = os.path.join(model_path, 'pdrgrid')
+
+        def _put(local_source, remote_name, attr=None, label=None):
+            remote_dest = os.path.join(pdrgrid, remote_name)
+            if _store(storage, local_source, remote_dest):
+                if attr:
+                    setattr(job, attr, remote_dest)
+                logger.info(f"Successfully stored {label or remote_name} for job {job_id}")
+                return True
+            failures.append(remote_name)
+            return False
+
         try:
             if os.path.exists(os.path.join('pdroutput', 'TEXTOUT')):
-                 # Local source path
-                local_source = os.path.join('pdroutput', 'TEXTOUT')
+                if _put(os.path.join('pdroutput', 'TEXTOUT'), text_out_name,
+                        'output_textout_file', 'TEXTOUT'):
+                    job.log_file = job.output_textout_file
 
-                # Remote destination path (relative to storage base_dir)
-                remote_dest = os.path.join(model_path, 'pdrgrid', text_out_name)
+            if not complete:
+                for local_source, remote_name in (
+                        (os.path.join('pdroutput', RUN_STATUS_FILE),
+                         'run_status' + model + '.json'),
+                        ('pdrexe_error.log', 'pdrexe_error' + model + '.log'),
+                        (os.path.join('pdroutput', 'pdrexe_error.log'),
+                         'pdrexe_error' + model + '.log')):
+                    if os.path.exists(local_source):
+                        _put(local_source, remote_name)
+            else:
+                for local_source, remote_name, attr, label in (
+                        (os.path.join('pdroutput', 'pdrout.hdf'), hdf_out_name,
+                         'output_hdf4_file', 'HDF4 file'),
+                        (os.path.join('pdroutput', 'pdrstruct_s.hdf5'), hdf5_struct_out_name,
+                         'output_hdf5_struct_file', 'HDF5 struct file'),
+                        (os.path.join('pdroutput', 'pdrchem_c.hdf5'), hdf5_chem_out_name,
+                         'output_hdf5_chem_file', 'HDF5 chem file'),
+                        (os.path.join('pdroutput', 'chemchk.out'), chemchk_out_name,
+                         'output_chemchk_file', 'chemchk file')):
+                    if os.path.exists(local_source):
+                        _put(local_source, remote_name, attr, label)
 
-                # Store file using backend (works with local, SFTP, S3, etc.)
-                storage.store_file(local_source, remote_dest)
-
-                # Update job with storage-aware path
-                job.log_file = remote_dest  # Now this path works with any backend
-                job.output_textout_file = remote_dest
-                logger.info(f"Successfully stored TEXTOUT file for job {job_id}")
-
-
-            if os.path.exists(os.path.join('pdroutput', 'pdrout.hdf')):
-                local_source = os.path.join('pdroutput', 'pdrout.hdf')
-                remote_dest  = os.path.join(model_path, 'pdrgrid', hdf_out_name)
-                storage.store_file(local_source, remote_dest)
-                job.output_hdf4_file = os.path.join(model_path, 'pdrgrid', hdf_out_name)
-                logger.info(f"Successfully stored HDF4 file for job {job_id}")
-
-            if os.path.exists(os.path.join('pdroutput', 'pdrstruct_s.hdf5')):
-                local_source = os.path.join('pdroutput', 'pdrstruct_s.hdf5')
-                remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
-                storage.store_file(local_source, remote_dest)
-                job.output_hdf5_struct_file = os.path.join(model_path, 'pdrgrid', hdf5_struct_out_name)
-                logger.info(f"Successfully stored HDF5 struct file for job {job_id}")
-
-            if os.path.exists(os.path.join('pdroutput', 'pdrchem_c.hdf5')):
-                local_source = os.path.join('pdroutput', 'pdrchem_c.hdf5')
-                remote_dest = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
-                storage.store_file(local_source, remote_dest)
-                job.output_hdf5_chem_file = os.path.join(model_path, 'pdrgrid', hdf5_chem_out_name)
-                logger.info(f"Successfully stored HDF5 chem file for job {job_id}")
-
-            if os.path.exists(os.path.join('pdroutput', 'chemchk.out')):
-                local_source = os.path.join('pdroutput', 'chemchk.out')
-                remote_dest = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-                storage.store_file(local_source, remote_dest)
-                job.output_chemchk_file = os.path.join(model_path, 'pdrgrid', chemchk_out_name)
-                logger.info(f"Successfully stored chemchk file for job {job_id}")
-
-            if os.path.exists('./Out'):
-                # Create tar file locally first
-                local_tar = os.path.join('/tmp', mrt_out_name)
-                make_tarfile(local_tar, './Out')
-
-                # Then upload to storage
-                remote_dest = os.path.join(model_path, 'pdrgrid', mrt_out_name)
-                storage.store_file(local_tar, remote_dest)
-
-                # Clean up local tar file
-                os.unlink(local_tar)
-                job.output_mcdrt_zip_file = os.path.join(model_path, 'pdrgrid', mrt_out_name)
-                logger.info(f"Successfully stored MCDRT output for job {job_id}")
+                if os.path.exists('./Out'):
+                    # Create tar file locally first, then upload it
+                    local_tar = os.path.join('/tmp', mrt_out_name)
+                    make_tarfile(local_tar, './Out')
+                    _put(local_tar, mrt_out_name, 'output_mcdrt_zip_file', 'MCDRT output')
+                    os.unlink(local_tar)
 
             if os.path.exists('PDRNEW.INP'):
-                local_source = os.path.join('PDRNEW.INP')
-                remote_dest = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-                storage.store_file(local_source, remote_dest)
-                job.input_pdrnew_inp_file = os.path.join(model_path, 'pdrgrid', pdrnew_inp_file_name)
-                logger.info(f"Successfully stored PDRNEW.INP for job {job_id}")
+                _put('PDRNEW.INP', pdrnew_inp_file_name, 'input_pdrnew_inp_file', 'PDRNEW.INP')
 
             if os.path.exists('pdr_config.json'):
-                local_source = 'pdr_config.json'
-                remote_dest = os.path.join(model_path, 'pdrgrid', json_file_name)
-                storage.store_file(local_source, remote_dest)
-                job.input_json_file = os.path.join(model_path, 'pdrgrid', json_file_name)
-                logger.info(f"Successfully stored pdr_config.json for job {job_id}")
+                _put('pdr_config.json', json_file_name, 'input_json_file', 'pdr_config.json')
 
-            if os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
-                local_source = os.path.join('pdroutput', 'CTRL_IND')
-                remote_dest = os.path.join(model_path, 'pdrgrid', ctrl_ind_file_name)
-                storage.store_file(local_source, remote_dest)
-                # copy for CTRL_IND onionexe
-                shutil.copyfile(
-                    os.path.join('pdroutput', 'CTRL_IND'),
-                    'CTRL_IND'
-                )
-                logger.info(f"Successfully stored CTRL_IND for job {job_id}")
+            if complete and os.path.exists(os.path.join('pdroutput', 'CTRL_IND')):
+                if _put(os.path.join('pdroutput', 'CTRL_IND'), ctrl_ind_file_name,
+                        None, 'CTRL_IND'):
+                    # copy for CTRL_IND onionexe
+                    shutil.copyfile(os.path.join('pdroutput', 'CTRL_IND'), 'CTRL_IND')
 
             # Commit all file storage updates to database
             try:
@@ -797,16 +849,17 @@ def copy_pdroutput(job_id, config=None, session=None):
 
         except Exception as e:
             logger.error(f"Storage operation failed for job {job_id}: {e}")
-            # Update job status to indicate storage failure
-            try:
-                job.status = 'failed_storage'
-                _session.commit()
-                logger.info(f"Updated job {job_id} status to 'failed_storage'")
-            except Exception as commit_error:
-                logger.error(f"Failed to update job status after storage error: {commit_error}")
-                _session.rollback()
-            raise
-        
+            _mark_failed_storage(job_id, _session, f"output files ({e})")
+            return False
+
+        if failures:
+            _mark_failed_storage(job_id, _session, "output file(s) " + ", ".join(failures))
+            return False
+
+        if not complete:
+            logger.info(f"Job {job_id}: model status '{model_status}' - stored logs only, "
+                        "no result files")
+            return True
 
         # Calculate SHA256 for local files (before they get cleaned up)
         local_hdf_path = 'pdroutput/pdrout.hdf'
@@ -896,6 +949,7 @@ def copy_pdroutput(job_id, config=None, session=None):
             logger.error(f"Failed to update database entries: {e}")
             _session.rollback()
             raise
+        return True
     finally:
         if session_created_locally:
             _session.close()
@@ -1037,6 +1091,9 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
         config (dict): Configuration dictionary
         session (sqlalchemy.orm.Session, optional): Database session. If None, a 
             new session will be created and closed. Defaults to None.
+
+    Returns:
+        bool: False if any file could not be stored after all retries.
     """
     from pdr_run.storage.base import get_storage_backend
 
@@ -1067,23 +1124,21 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
             'ONION3_' + spec + '.OUT'
         ]
         
-        try:
-            for f in onion_files:
-                path = os.path.join('onionoutput', f)
-                if os.path.exists(path):
-                    remote_dest = os.path.join(model_path, 'oniongrid', 'ONION' + model + '.' + f)
-                    storage.store_file(path, remote_dest)
-                    logger.debug(f"Stored onion file {f} for job {job_id}")
-
-            storage.store_file(
-                os.path.join('onionoutput', 'TEXTOUT'),
-                os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec)
-            )
+        ok = True
+        for f in onion_files:
+            path = os.path.join('onionoutput', f)
+            if os.path.exists(path):
+                ok &= _store(storage, path, os.path.join(
+                    model_path, 'oniongrid', 'ONION' + model + '.' + f))
+        ok &= _store(
+            storage,
+            os.path.join('onionoutput', 'TEXTOUT'),
+            os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec))
+        if ok:
             logger.info(f"Successfully copied onion output for species {spec}")
-
-        except Exception as e:
-            logger.error(f"Failed to store onion output files for species {spec}, job {job_id}: {e}")
-            raise
+        else:
+            logger.error(f"Failed to store onion output files for species {spec}, job {job_id}")
+        return ok
     finally:
         if session_created_locally:
             _session.close()
@@ -1109,6 +1164,9 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
     results are written into a separate working copy that is stored under
     simlinegrid/pdrstruct<model>_simline.hdf5, so the ONION intensities in
     pdrgrid/ remain untouched.
+
+    Returns False if storing a result file failed after all retries; raises
+    if the pipeline itself fails.
     """
     import sys as _sys
 
@@ -1181,19 +1239,22 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
 
         # --- store results under simlinegrid/
         stored = 0
+        ok = True
         for fname in sorted(os.listdir(simline_out)):
             src = os.path.join(simline_out, fname)
             if os.path.isfile(src):
-                storage.store_file(
-                    src, os.path.join(model_path, 'simlinegrid',
-                                      f'SIMLINE{model}.{fname}'))
-                stored += 1
-        storage.store_file(
-            workfile, os.path.join(model_path, 'simlinegrid',
-                                   f'pdrstruct{model}_simline.hdf5'))
-        logger.info(
-            f"Stored SIMLINE-augmented HDF5 and {stored} output file(s) "
-            f"under simlinegrid/ for job {job_id}")
+                if _store(storage, src, os.path.join(
+                        model_path, 'simlinegrid', f'SIMLINE{model}.{fname}')):
+                    stored += 1
+                else:
+                    ok = False
+        ok &= _store(storage, workfile, os.path.join(
+            model_path, 'simlinegrid', f'pdrstruct{model}_simline.hdf5'))
+        if ok:
+            logger.info(
+                f"Stored SIMLINE-augmented HDF5 and {stored} output file(s) "
+                f"under simlinegrid/ for job {job_id}")
+        return ok
     finally:
         if session_created_locally:
             _session.close()
@@ -1328,7 +1389,8 @@ def run_uv_continuum(job_id, tmp_dir='./', config=None, session=None):
             logger.debug(f"run_uv_continuum: Closed local session for job {job_id}")
 
 
-def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_simline=False):
+def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_simline=False,
+                  rerun=None):
     """Run the KOSMA-tau model workflow for a job.
 
     Args:
@@ -1336,6 +1398,15 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
         tmp_dir (str): Temporary directory path
         force_onion (bool): If True, run onion even if PDR model was skipped
         config (dict): Configuration dictionary
+        rerun (iterable of str, optional): recompute a node whose result is
+            already stored if the status of its stored result is selected
+            (see ``rerun_selects``); default None = skip existing nodes.
+
+    The model's own status (finished, not_converged, aborted, ...) is never
+    overwritten by a post-processing failure: ONION/SIMLINE run only for
+    ``job_status.POSTPROCESS_STATUSES``, their failures go to
+    ``job.postproc_error``, and result storage failures give the terminal
+    status 'failed_storage'.
     """
     logger.info(f"Running KOSMA-tau model for job {job_id}")
 
@@ -1397,6 +1468,15 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
             logger.warning(f"Could not check for existing model: {e}")
             model_exists = False
         
+        if model_exists and rerun:
+            stored_status = _stored_result_status(_session, job)
+            if rerun_selects(stored_status, rerun):
+                logger.warning(
+                    f"Model {model} exists (stored result status: {stored_status}); "
+                    f"--rerun {','.join(rerun)} selects it: recomputing, the stored "
+                    "files are replaced only when the new ones are written")
+                model_exists = False
+
         if model_exists:
             logger.warning(f"Model {model} exists remotely, skipping PDR execution")
             
@@ -1473,37 +1553,69 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
                     f"Skipping UV continuum post-processing for job {job_id}: "
                     f"model status '{job.status}' is not a success status")
 
-        # Run onion for each species if PDR was not skipped or force_onion is True
-        if not pdr_skipped or force_onion:
-            species = string_to_list(job.onion_species)
-            for spec in species:
-                logger.info(f"Processing species: {spec}")
-                
-                # Set up onion directory
-                set_oniondir(spec)
-                
-                # Run onion model
-                run_onion(spec, job_id, tmp_dir, config=config, session=_session) # Pass session
-                # Copy output files
-                copy_onionoutput(spec, job_id, config=config, session=_session) # Pass session
-        else:
-            logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
+        # Post-processing (ONION, SIMLINE) runs only on a usable model. For
+        # aborted/timeout/missing_output there is no valid pdrstruct/CTRL_IND
+        # and ONION would only raise and hide the real failure. A failure of
+        # a step is recorded in job.postproc_error; it never changes the
+        # model's status and never prevents storing the model output.
+        model_status = job.status
+        usable = pdr_skipped or model_status in POSTPROCESS_STATUSES
+        postproc_errors = []
 
-        # SIMLINE post-processing (opt-in via config['simline']['enabled'] or
-        # force_simline). force_simline also runs it when the PDR step was
-        # skipped because the model already exists (RT-only reruns on a grid).
-        simline_enabled = force_simline or (config or {}).get('simline', {}).get('enabled', False)
-        if simline_enabled:
-            if not pdr_skipped or force_onion or force_simline:
-                run_simline(job_id, tmp_dir, config=config, session=_session)
+        def _postproc(step, func, *args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"{step} failed for job {job_id}: {exc}", exc_info=True)
+                postproc_errors.append(f"{step}: {exc}")
+                return None
+
+        if not usable:
+            logger.info(f"Job {job_id}: model status '{job.status}' is not usable; "
+                        "skipping ONION/SIMLINE/UV-continuum post-processing, "
+                        "storing the logs")
+        else:
+            # Run onion for each species if PDR was not skipped or force_onion is True
+            if not pdr_skipped or force_onion:
+                species = string_to_list(job.onion_species)
+                for spec in species:
+                    logger.info(f"Processing species: {spec}")
+
+                    def _onion(spec=spec):
+                        # Set up onion directory, run onion, copy its output
+                        set_oniondir(spec)
+                        run_onion(spec, job_id, tmp_dir, config=config, session=_session)
+                        return copy_onionoutput(spec, job_id, config=config, session=_session)
+
+                    if _postproc(f"ONION {spec}", _onion) is False:
+                        _mark_failed_storage(job_id, _session, f"ONION output for {spec}")
             else:
-                logger.info("Skipping SIMLINE as PDR was skipped. Use force_simline=True to override.")
-        
+                logger.info(f"Skipping onion runs as PDR was skipped. Use force_onion=True to override.")
+
+            # SIMLINE post-processing (opt-in via config['simline']['enabled'] or
+            # force_simline). force_simline also runs it when the PDR step was
+            # skipped because the model already exists (RT-only reruns on a grid).
+            simline_enabled = force_simline or (config or {}).get('simline', {}).get('enabled', False)
+            if simline_enabled:
+                if not pdr_skipped or force_onion or force_simline:
+                    if _postproc("SIMLINE", run_simline, job_id, tmp_dir,
+                                 config=config, session=_session) is False:
+                        _mark_failed_storage(job_id, _session, "SIMLINE output")
+                else:
+                    logger.info("Skipping SIMLINE as PDR was skipped. Use force_simline=True to override.")
+
+        if postproc_errors:
+            job.postproc_error = '; '.join(postproc_errors)
+            _session.commit()
+
         # Copy output files - moved after the onion run because ONION modifies the HDF5 file
-        # Only copy if we actually ran the PDR model
+        # Only copy if we actually ran the PDR model. Runs for every status:
+        # logs are stored even for an unusable model (copy_pdroutput decides
+        # what to store); a storage failure sets 'failed_storage' there.
         if not pdr_skipped:
-            copy_pdroutput(job_id, config=config, session=_session) # Pass session
-    
+            copy_pdroutput(job_id, config=config, session=_session,
+                           model_status=model_status)
+
         logger.info(f"Completed KOSMA-tau model run for job {job_id}")
 
     finally:

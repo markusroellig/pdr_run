@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import TypeVar, Type, Optional, Any, Callable, List
+from typing import TypeVar, Type, Optional, Any, Callable, List, Dict
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import (
@@ -338,6 +338,35 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
         logger.error(f"Failed to update job {job_id} status to '{status}': {e}")
         session.rollback()
         raise
+
+
+def summarize_job_states(job_ids: List[int], session: Optional[Session] = None):
+    """Final states of the jobs of a run.
+
+    Returns ``(counts, n_postproc_errors)``: ``counts`` maps job status to
+    number of jobs; ``n_postproc_errors`` counts jobs with a recorded
+    post-processing error (``postproc_error`` or ``uvcont_error``), which do
+    not change the job status.
+    """
+    _session = session
+    created = _session is None
+    if created:
+        _session = get_db_manager().get_session()
+    try:
+        counts: Dict[str, int] = {}
+        n_postproc = 0
+        for job_id in job_ids:
+            job = _session.get(PDRModelJob, job_id)
+            if job is None:
+                continue
+            _session.refresh(job)
+            counts[job.status] = counts.get(job.status, 0) + 1
+            if job.postproc_error or job.uvcont_error:
+                n_postproc += 1
+        return counts, n_postproc
+    finally:
+        if created:
+            _session.close()
 
 
 def find_stale_jobs(session: Optional[Session] = None,

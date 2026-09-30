@@ -4,6 +4,7 @@ All network I/O is mocked (subprocess.run / paramiko.SSHClient) - no real
 rclone binary or SSH server is used or required.
 """
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -207,3 +208,64 @@ def test_sftp_store_file_no_retry_for_missing_local_file(sftp_storage, tmp_path)
             sftp_storage.store_file(str(missing), 'grid/model.hdf5')
     # Never even attempted a connection - local precondition checked first.
     mock_ssh_cls.assert_not_called()
+
+
+def test_sftp_retrieve_missing_remote_file_is_not_retried(sftp_storage, tmp_path):
+    """FileNotFoundError is an OSError but permanent: exactly one attempt."""
+    client = MagicMock()
+    client.open_sftp.return_value.get.side_effect = FileNotFoundError("no such file")
+    with patch('paramiko.SSHClient', return_value=client) as mock_ssh_cls:
+        with patch('time.sleep') as mock_sleep:
+            with pytest.raises(FileNotFoundError):
+                sftp_storage.retrieve_file('grid/missing.hdf5', str(tmp_path / 'x'))
+    assert mock_ssh_cls.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+def test_sftp_other_oserror_is_still_retried(sftp_storage, tmp_path):
+    client = MagicMock()
+    client.open_sftp.return_value.get.side_effect = OSError("socket closed")
+    with patch('paramiko.SSHClient', return_value=client) as mock_ssh_cls:
+        with patch('time.sleep'):
+            with pytest.raises(OSError):
+                sftp_storage.retrieve_file('grid/x.hdf5', str(tmp_path / 'x'))
+    assert mock_ssh_cls.call_count == 4
+
+
+def test_retry_giveup_exceptions_are_raised_immediately():
+    calls = {'n': 0}
+
+    @retry_with_backoff(max_retries=3, initial_delay=0.001, backoff=1.0,
+                         exceptions=(OSError,), giveup=(FileNotFoundError,))
+    def f():
+        calls['n'] += 1
+        raise FileNotFoundError("gone")
+
+    with pytest.raises(FileNotFoundError):
+        f()
+    assert calls['n'] == 1
+
+
+def test_sftp_store_writes_part_file_then_renames(sftp_storage, tmp_path):
+    local_file = tmp_path / "model.hdf5"
+    local_file.write_text("data")
+    client = MagicMock()
+    sftp = client.open_sftp.return_value
+    sftp.stat.return_value = MagicMock(st_size=4)
+    with patch('paramiko.SSHClient', return_value=client):
+        assert sftp_storage.store_file(str(local_file), 'grid/model.hdf5') is True
+    target = '/remote/base/grid/model.hdf5'
+    sftp.put.assert_called_once_with(str(local_file), target + '.part')
+    sftp.posix_rename.assert_called_once_with(target + '.part', target)
+
+
+def test_local_store_replaces_existing_file_atomically(tmp_path):
+    from pdr_run.storage.local import LocalStorage
+    store = LocalStorage(str(tmp_path / 'store'))
+    src = tmp_path / 'new.txt'
+    src.write_text('new')
+    store.store_file(str(src), 'a/b.txt')
+    (tmp_path / 'store' / 'a' / 'b.txt').write_text('old')
+    store.store_file(str(src), 'a/b.txt')
+    assert (tmp_path / 'store' / 'a' / 'b.txt').read_text() == 'new'
+    assert sorted(os.listdir(tmp_path / 'store' / 'a')) == ['b.txt']   # no .part left

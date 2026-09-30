@@ -416,3 +416,16 @@ class TestDatabaseManagerProcessAffinity(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+def test_ensure_additive_columns_adds_postproc_error():
+    """A database created before postproc_error existed is patched in place."""
+    from sqlalchemy import create_engine, inspect, text
+    from pdr_run.database.base import Base
+    import pdr_run.database.models  # noqa: F401
+    from pdr_run.database.db_manager import ensure_additive_columns
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text('ALTER TABLE pdr_model_jobs DROP COLUMN postproc_error'))
+    ensure_additive_columns(engine)
+    assert 'postproc_error' in {c['name'] for c in inspect(engine).get_columns('pdr_model_jobs')}

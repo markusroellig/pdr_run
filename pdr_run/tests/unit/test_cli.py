@@ -146,3 +146,61 @@ def test_main_reset_stale_jobs_dry_run_passes_through():
 
     _, kwargs = mock_reset.call_args
     assert kwargs['dry_run'] is True
+
+# ---------------------------------------------------------------------------
+# --rerun and exit codes
+# ---------------------------------------------------------------------------
+
+def test_parse_rerun_default_and_values():
+    with patch('sys.argv', ['pdr_run', '--single']):
+        assert parse_arguments().rerun is None
+    with patch('sys.argv', ['pdr_run', '--single', '--rerun', 'not_converged,aborted']):
+        assert parse_arguments().rerun == ('not_converged', 'aborted')
+    with patch('sys.argv', ['pdr_run', '--grid', '--rerun', 'failed']):
+        assert parse_arguments().rerun == ('failed',)
+
+
+def test_parse_rerun_rejects_unknown_state():
+    with patch('sys.argv', ['pdr_run', '--single', '--rerun', 'notconverged']), \
+         pytest.raises(SystemExit):
+        parse_arguments()
+
+
+def _run_main(argv, job_ids, states):
+    """Run main() with a mocked grid run whose jobs end in *states*."""
+    from pdr_run.cli.runner import main
+    with patch('sys.argv', argv), \
+         patch('pdr_run.cli.runner.run_parameter_grid', return_value=job_ids) as grid, \
+         patch('pdr_run.database.queries.summarize_job_states', return_value=states) as summ:
+        try:
+            main()
+            code = 0
+        except SystemExit as exc:
+            code = exc.code
+    return code, grid
+
+
+def test_exit_code_0_when_all_jobs_succeeded(capsys):
+    code, grid = _run_main(['pdr_run', '--grid', '--rerun', 'failed'], [1, 2, 3, 4],
+                           ({'finished': 2, 'finished_relaxed': 1, 'skipped': 1}, 0))
+    assert code == 0
+    assert grid.call_args.kwargs['rerun'] == ('failed',)
+    out = capsys.readouterr().out
+    assert '2 finished' in out and '0 failed_storage' in out
+
+
+@pytest.mark.parametrize('states', [
+    ({'finished': 2, 'not_converged': 1}, 0),
+    ({'finished': 2, 'aborted': 1}, 0),
+    ({'finished': 2, 'failed_storage': 1}, 0),
+    ({'finished': 3}, 1),                       # post-processing error recorded
+])
+def test_exit_code_1_when_some_jobs_failed(states, capsys):
+    code, _ = _run_main(['pdr_run', '--grid'], [1, 2, 3], states)
+    assert code == 1
+    assert 'Job states:' in capsys.readouterr().out
+
+
+def test_exit_code_2_when_no_job_ran():
+    code, _ = _run_main(['pdr_run', '--grid'], [], ({}, 0))
+    assert code == 2

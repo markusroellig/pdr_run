@@ -351,7 +351,7 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
         logger.debug("Database session closed in create_database_entries")
 
 
-def run_instance(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False):
+def run_instance(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False, rerun=None):
     """Run a single PDR model instance."""
     start_time_instance = time.time()
     logger.info(f"Starting job {job_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -404,7 +404,7 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None, kee
                     os.chdir(tmp_dir_path_local)
                     logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
 
-                    run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config, force_simline=force_simline)
+                    run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config, force_simline=force_simline, rerun=rerun)
 
                     return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
                 except Exception as exec_err:
@@ -589,7 +589,7 @@ def _setup_template_files(tmp_dir, pdr_dir, config, json_template=None):
         logger.warning(f"JSON template file {json_template_file} not found in standard locations")
 
 
-def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False):
+def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False, rerun=None):
     """Wrapper function for run_instance to handle exceptions.
 
     Args:
@@ -608,7 +608,7 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
         get_db_manager(db_config)
 
     try:
-        output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline)
+        output = run_instance(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline, rerun=rerun)
         for line in output:
             logger.info(f"[Job {job_id}]: {line}")
     except Exception as e:
@@ -694,7 +694,7 @@ def _build_default_config(params=None):
     
     return config
 
-def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None, keep_tmp=False, diagnostics_output_path=None, force_simline=False):
+def run_parameter_grid(params=None, model_name=None, config=None, parallel=True, n_workers=None, force_onion=False, json_template=None, keep_tmp=False, diagnostics_output_path=None, force_simline=False, rerun=None):
     """Run a grid of PDR models with different parameters."""
     """Run a grid of PDR models with different parameters.
     
@@ -707,6 +707,8 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
         force_onion (bool, optional): Force onion step.
         json_template (str, optional): JSON template path.
         keep_tmp (bool, optional): Preserve temporary directories.
+        rerun (iterable of str, optional): recompute existing nodes whose stored
+            result status is selected (see kosma_tau.rerun_selects).
         diagnostics_output_path (str, optional): Write final database diagnostics snapshot here.
     """
     start_time = time.time()
@@ -818,12 +820,12 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
     # Run jobs
     if parallel:
         Parallel(n_jobs=n_workers)(
-            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline)
+            delayed(run_instance_wrapper)(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline, rerun=rerun)
             for job_id in job_ids
         )
     else:
         for job_id in job_ids:
-            run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline)
+            run_instance_wrapper(job_id, config, force_onion=force_onion, json_template=json_template, keep_tmp=keep_tmp, force_simline=force_simline, rerun=rerun)
     end_time = time.time()
     logger.info(f"Parameter grid execution for model '{model_name}' completed in {end_time - start_time:.2f} seconds.")
     
@@ -844,7 +846,7 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
 # Remove this problematic line that tries to attach the function as an attribute
 # run_parameter_grid._calculate_cpu_count = _calculate_cpu_count
 
-def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False):
+def run_model(params=None, model_name=None, config=None, force_onion=False, json_template=None, keep_tmp=False, force_simline=False, rerun=None):
     """Run a single PDR model.
     
     Args:
@@ -874,7 +876,8 @@ def run_model(params=None, model_name=None, config=None, force_onion=False, json
         force_onion=force_onion,       # was silently dropped before
         force_simline=force_simline,
         json_template=json_template,
-        keep_tmp=keep_tmp # Pass keep_tmp
+        keep_tmp=keep_tmp, # Pass keep_tmp
+        rerun=rerun
     )
     
     if job_ids:

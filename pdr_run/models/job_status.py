@@ -42,6 +42,25 @@ ALL_STATUSES = SUCCESS_STATUSES + (
     STATUS_NOT_CONVERGED, STATUS_ABORTED, STATUS_MISSING_OUTPUT, STATUS_TIMEOUT,
 )
 
+# Statuses whose pdroutput/ is a complete, valid structure output: safe to
+# store as the node's result (a not_converged model still ran to the end and
+# wrote every output file). For timeout/aborted/missing_output the files, if
+# any, are partial and are NOT stored as results - a partial
+# pdrstruct<model>.hdf5 would be mistaken for a finished node by the
+# skip-existing logic; only the logs are stored for diagnosis.
+COMPLETE_OUTPUT_STATUSES = SUCCESS_STATUSES + (STATUS_NOT_CONVERGED,)
+
+# Statuses for which ONION/SIMLINE/UV-continuum post-processing runs: the
+# converged (strict/relaxed) and flagged models. A not_converged structure is
+# stored but not post-processed (post-processing a model that has to be
+# recomputed anyway wastes hours).
+POSTPROCESS_STATUSES = SUCCESS_STATUSES
+
+# Job states that count as success for the pdr_run exit code. 'skipped'
+# (result already stored) counts as success; 'flagged' is a usable model.
+STATUS_SKIPPED = 'skipped'
+JOB_SUCCESS_STATES = SUCCESS_STATUSES + (STATUS_SKIPPED,)
+
 RUN_STATUS_FILE = 'run_status.json'
 STRUCT_FILE = 'pdrstruct_s.hdf5'
 TEXTOUT_FILE = 'TEXTOUT'

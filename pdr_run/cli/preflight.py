@@ -92,6 +92,7 @@ class Ctx:
     cpus: Optional[int] = None
     force_simline: bool = False
     cli_species: Optional[List[str]] = None
+    rerun: Optional[tuple] = None          # --rerun selection (informational)
 
     file_config: Optional[dict] = None     # YAML as loaded (None: no file)
     config_ok: bool = False
@@ -1341,7 +1342,9 @@ def _format_report(ctx: Ctx, elapsed: float, logfiles: List[str], n_logged: int)
     cfg = os.path.abspath(ctx.config_path) if ctx.config_path else 'none (built-in defaults)'
     log = ', '.join(logfiles) if logfiles else 'no log file configured'
     lines.append(f"Config: {cfg} | detailed log: {log} | "
-                 f"{n_logged} WARNING+ log message(s) suppressed on screen")
+                 f"{n_logged} WARNING+ log message(s) suppressed on screen"
+                 + (f" | --rerun {','.join(ctx.rerun)}: matching stored nodes are recomputed"
+                    if ctx.rerun else ""))
     return '\n'.join(lines)
 
 
@@ -1350,12 +1353,12 @@ def run_preflight(config_path: Optional[str] = None, json_output: bool = False,
                   timeout: float = DEFAULT_TIMEOUT_S, json_template: Optional[str] = None,
                   workers: Optional[int] = None, cpus: Optional[int] = None,
                   force_simline: bool = False, species: Optional[List[str]] = None,
-                  out=None) -> int:
+                  rerun: Optional[tuple] = None, out=None) -> int:
     """Run all checks, print the report to *out* (default stdout), return the exit code."""
     out = out or sys.stdout
     ctx = Ctx(config_path=config_path, json_template=json_template,
               min_free_gb=min_free_gb, timeout=timeout, workers=workers, cpus=cpus,
-              force_simline=force_simline, cli_species=species)
+              force_simline=force_simline, cli_species=species, rerun=rerun)
     t0 = time.monotonic()
     with _LogQuieter() as quiet:
         try:
@@ -1395,6 +1398,7 @@ def run_preflight(config_path: Optional[str] = None, json_output: bool = False,
             'summary': counts,
             'elapsed_s': round(elapsed, 3),
             'config_file': os.path.abspath(config_path) if config_path else None,
+            'rerun': list(rerun) if rerun else None,
             'log_files': logfiles,
             'suppressed_warning_log_messages': n_logged,
             'checks': [dict(name=r.name, status=r.status, detail=r.detail,

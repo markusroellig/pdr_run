@@ -220,6 +220,21 @@ def test_missing_additive_column_is_fail_and_not_repaired(tmp_path, config):
     assert 'uvcont_error' not in cols
 
 
+def test_missing_postproc_error_column_is_reported_as_additive(tmp_path, config):
+    db = config['database']['path']
+    os.remove(db)
+    _make_db(db, drop_column='postproc_error')
+    rc, _, checks, _ = _run(tmp_path, config)
+    assert rc == 1
+    assert checks['db.additive_columns']['status'] == 'FAIL'
+    assert 'postproc_error' in checks['db.additive_columns']['detail']
+
+
+def test_rerun_flag_is_accepted(tmp_path, config):
+    rc, data, checks, _ = _run(tmp_path, config, rerun=('not_converged',))
+    assert rc == 0 and data['rerun'] == ['not_converged']
+
+
 def test_missing_table_and_generic_column(tmp_path, config):
     db = config['database']['path']
     con = sqlite3.connect(db)

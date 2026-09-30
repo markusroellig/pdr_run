@@ -458,3 +458,197 @@ class TestRunKosmaTauUvContinuumOrdering:
         assert reloaded.uvcont_error == 'tool exploded'
         # the rest of the pipeline still ran
         assert 'copy_pdroutput' in orchestration_mocks
+
+
+# ---------------------------------------------------------------------------
+# run_kosma_tau: failure handling (status kept, post-processing gated,
+# storage failures, --rerun)
+# ---------------------------------------------------------------------------
+
+def _pdr_sets_status(order, status):
+    def _run_pdr(job_id, tmp_dir, session=None, config=None):
+        order.append('run_pdr')
+        session.get(kosma_tau.PDRModelJob, job_id).status = status
+        session.commit()   # as run_pdr's update_job_status does
+    return _run_pdr
+
+
+def _reload(db_session, job_id):
+    return db_session.get(kosma_tau.PDRModelJob, job_id)
+
+
+class TestPostProcessingGating:
+    @pytest.mark.parametrize('status', ['aborted', 'timeout', 'missing_output'])
+    def test_unusable_model_skips_postprocessing_keeps_status_and_stores_logs(
+            self, status, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='CO')
+        job_id = job.id
+        config = {'simline': {'enabled': True},
+                  'uv_continuum': {'enabled': True, 'kosma_tau_dir': '/x'}}
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, status)):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config=config)
+
+        for step in ('run_onion', 'set_oniondir', 'copy_onionoutput',
+                     'run_simline', 'run_uv_continuum'):
+            assert step not in orchestration_mocks
+        assert 'copy_pdroutput' in orchestration_mocks      # logs are stored
+        assert _reload(db_session, job_id).status == status  # not exception_runtime
+
+    def test_not_converged_is_stored_but_not_postprocessed(
+            self, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='CO')
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, 'not_converged')):
+            kosma_tau.run_kosma_tau(job.id, tmp_dir='.', config={})
+        assert 'run_onion' not in orchestration_mocks
+        assert 'copy_pdroutput' in orchestration_mocks
+
+    def test_onion_failure_keeps_status_records_error_and_stores_output(
+            self, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='CO')
+        job_id = job.id
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, 'finished')), \
+             patch.object(kosma_tau, 'run_onion',
+                          side_effect=FileNotFoundError('pdroutput/CTRL_IND')):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={})   # must not raise
+        reloaded = _reload(db_session, job_id)
+        assert reloaded.status == 'finished'
+        assert 'ONION CO' in reloaded.postproc_error
+        assert 'CTRL_IND' in reloaded.postproc_error
+        assert 'copy_pdroutput' in orchestration_mocks
+
+    def test_simline_failure_still_stores_output(
+            self, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='')
+        job_id = job.id
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, 'finished_relaxed')), \
+             patch.object(kosma_tau, 'run_simline', side_effect=RuntimeError('simline died')):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={'simline': {'enabled': True}})
+        reloaded = _reload(db_session, job_id)
+        assert reloaded.status == 'finished_relaxed'
+        assert 'SIMLINE: simline died' in reloaded.postproc_error
+        assert 'copy_pdroutput' in orchestration_mocks
+
+    def test_postprocessing_storage_failure_gives_failed_storage_not_overwritten(
+            self, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='CO')
+        job_id = job.id
+        received = {}
+
+        def _copy_pdroutput(job_id, config=None, session=None, model_status=None):
+            received['model_status'] = model_status
+            received['status_then'] = session.get(kosma_tau.PDRModelJob, job_id).status
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, 'finished')), \
+             patch.object(kosma_tau, 'copy_onionoutput', return_value=False), \
+             patch.object(kosma_tau, 'copy_pdroutput', side_effect=_copy_pdroutput):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={})
+        assert _reload(db_session, job_id).status == 'failed_storage'
+        # the result files are still judged by the model's own status
+        assert received['model_status'] == 'finished'
+
+
+class TestCopyPdroutputStorage:
+    @pytest.fixture
+    def outdir(self, tmp_path, monkeypatch):
+        (tmp_path / 'pdroutput').mkdir()
+        (tmp_path / 'pdroutput' / 'TEXTOUT').write_text('screen log')
+        (tmp_path / 'pdroutput' / 'run_status.json').write_text('{}')
+        (tmp_path / 'pdroutput' / 'pdrstruct_s.hdf5').write_text('partial')
+        (tmp_path / 'pdrexe_error.log').write_text('boom')
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def test_aborted_stores_logs_but_no_result_files(
+            self, outdir, make_job, db_session, monkeypatch):
+        job = make_job()
+        storage = MagicMock()
+        storage.store_file.return_value = True
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend', lambda config=None: storage)
+        assert kosma_tau.copy_pdroutput(job.id, session=db_session, model_status='aborted') is True
+        stored = [os.path.basename(c.args[1]) for c in storage.store_file.call_args_list]
+        assert 'TEXTOUTj001' in stored
+        assert 'run_statusj001.json' in stored
+        assert 'pdrexe_errorj001.log' in stored
+        # a partial structure file must never look like a finished node
+        assert 'pdrstructj001.hdf5' not in stored
+
+    @pytest.mark.parametrize('failure', ['returns_false', 'raises'])
+    def test_storage_failure_after_retries_gives_failed_storage(
+            self, failure, outdir, make_job, db_session, monkeypatch):
+        job = make_job(status='finished')
+        job_id = job.id
+        storage = MagicMock()
+        if failure == 'returns_false':
+            storage.store_file.return_value = False
+        else:
+            storage.store_file.side_effect = OSError('disk full')
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend', lambda config=None: storage)
+        assert kosma_tau.copy_pdroutput(job_id, session=db_session,
+                                        model_status='finished') is False
+        assert _reload(db_session, job_id).status == 'failed_storage'
+
+    def test_one_failed_file_does_not_stop_the_others(
+            self, outdir, make_job, db_session, monkeypatch):
+        job = make_job(status='finished')
+        storage = MagicMock()
+        storage.store_file.side_effect = lambda src, dst: 'TEXTOUT' not in dst
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend', lambda config=None: storage)
+        kosma_tau.copy_pdroutput(job.id, session=db_session, model_status='finished')
+        stored = [os.path.basename(c.args[1]) for c in storage.store_file.call_args_list]
+        assert 'pdrstructj001.hdf5' in stored
+
+
+class TestRerun:
+    @pytest.fixture
+    def existing_model(self, orchestration_mocks, monkeypatch):
+        """Storage says the node exists."""
+        storage = MagicMock()
+        storage.file_exists.return_value = True
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend', lambda config=None: storage)
+        return orchestration_mocks
+
+    def _previous_job(self, make_job, db_session, status):
+        prev = make_job(status=status)
+        # second job for the same node (same model_name_id / model_job_name)
+        job = kosma_tau.PDRModelJob(
+            model_name_id=prev.model_name_id, model_job_name=prev.model_job_name,
+            kosmatau_parameters_id=prev.kosmatau_parameters_id,
+            kosmatau_executable_id=prev.kosmatau_executable_id,
+            chemical_database_id=prev.chemical_database_id, onion_species='')
+        db_session.add(job)
+        db_session.commit()
+        return job.id
+
+    def test_default_skips_existing_not_converged_node(
+            self, existing_model, make_job, db_session):
+        job_id = self._previous_job(make_job, db_session, 'not_converged')
+        kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={})
+        assert 'run_pdr' not in existing_model
+
+    def test_rerun_not_converged_recomputes_it(self, existing_model, make_job, db_session):
+        job_id = self._previous_job(make_job, db_session, 'not_converged')
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(existing_model, 'finished')):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={},
+                                    rerun=('not_converged',))
+        assert 'run_pdr' in existing_model
+        assert 'copy_pdroutput' in existing_model
+
+    def test_rerun_not_converged_leaves_converged_node_skipped(
+            self, existing_model, make_job, db_session):
+        job_id = self._previous_job(make_job, db_session, 'finished')
+        kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={}, rerun=('not_converged',))
+        assert 'run_pdr' not in existing_model
+        assert _reload(db_session, job_id).status == 'skipped'
+
+    def test_rerun_selects(self):
+        sel = kosma_tau.rerun_selects
+        assert sel('aborted', ('failed',)) and sel('not_converged', ('failed',))
+        assert not sel('finished', ('failed',)) and not sel('flagged', ('failed',))
+        assert sel('finished', ('all',)) and sel(None, ('all',))
+        assert not sel(None, ('failed',)) and not sel('aborted', ('not_converged',))
+        assert not sel('aborted', None)

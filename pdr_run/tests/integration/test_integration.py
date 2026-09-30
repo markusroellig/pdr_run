@@ -170,8 +170,11 @@ def test_error_handling(mock_environment):
          patch('pdr_run.cli.runner.run_model', side_effect=Exception("Test error")), \
          patch('pdr_run.cli.runner.logger') as mock_logger:
 
-        # Should log the error but not crash
-        main()
+        # Logs the error and exits with the run-level error code 2
+        # (was: exit 0 - a crashed run must not look like a success).
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+        assert excinfo.value.code == 2
 
         # Verify error was logged
         mock_logger.error.assert_called()
