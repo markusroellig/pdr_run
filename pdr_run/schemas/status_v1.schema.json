@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "pdr_run.status/1",
+  "title": "pdr_run status --json, schema v1",
+  "description": "Read-only snapshot of one grid tier (model name). Times are naive ISO local time of the collector host (collector.utc_offset_s) except generated_at (UTC, Z). Null/absent optional keys mean 'not known'. Never contains credentials or config_json.",
+  "type": "object",
+  "required": ["schema", "generated_at", "collector", "grid", "summary", "delta", "nodes", "running", "eta_inputs", "events", "storage", "urgent"],
+  "properties": {
+    "schema": {"const": "pdr_run.status/1"},
+    "generated_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "collector": {
+      "type": "object",
+      "required": ["version", "host", "elapsed_s"],
+      "properties": {
+        "version": {"type": "string"}, "host": {"type": "string"},
+        "elapsed_s": {"type": "number"}, "utc_offset_s": {"type": "integer"}, "times": {"type": "string"}
+      }
+    },
+    "grid": {
+      "type": "object",
+      "required": ["id", "database", "model_name", "axes", "max_walltime_s", "workers"],
+      "properties": {
+        "id": {"type": "string"}, "database": {"type": "string"}, "db_type": {"type": "string"},
+        "model_name": {"type": "string"}, "tier": {"type": ["string", "null"]},
+        "axes": {"type": "array", "items": {
+          "type": "object", "required": ["key", "param", "label", "unit", "log", "values"],
+          "properties": {
+            "key": {"type": "string"}, "param": {"type": "string"}, "label": {"type": "string"},
+            "unit": {"type": "string"}, "log": {"type": "boolean"},
+            "values": {"type": "array", "items": {"type": "number"}}}}},
+        "facet_axis": {"type": ["string", "null"]},
+        "max_walltime_s": {"type": ["number", "null"]}, "workers": {"type": ["integer", "null"]},
+        "cores_per_job": {"type": "number"},
+        "binary_sha256": {"type": "array", "items": {"type": "string"}},
+        "template_sha256": {"type": "array", "items": {"type": "string"}},
+        "notebook_entry": {"type": ["string", "null"]},
+        "status_classes": {"type": "object", "additionalProperties": {"$ref": "#/definitions/class"}}
+      }
+    },
+    "summary": {
+      "type": "object", "required": ["total", "by_status", "by_class", "core_hours", "eta"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0}, "n_rows": {"type": "integer"},
+        "by_status": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_class": {"type": "object", "required": ["ok", "warn", "bad", "run", "pending"],
+                     "additionalProperties": {"type": "integer"}},
+        "core_hours": {"type": "number"},
+        "eta": {"type": "object", "required": ["p10", "p50", "p90", "model", "n_fit"],
+                "properties": {"p10": {"type": ["string", "null"]}, "p50": {"type": ["string", "null"]},
+                               "p90": {"type": ["string", "null"]}, "model": {"type": "string"},
+                               "n_fit": {"type": "integer"}}}
+      }
+    },
+    "delta": {"type": "boolean", "description": "true: nodes/physics hold only nodes changed since 'since'; summary is always complete"},
+    "since": {"type": ["string", "null"]},
+    "nodes": {"type": "array", "items": {"$ref": "#/definitions/node"}},
+    "running": {"type": "array", "items": {
+      "type": "object", "required": ["job_id", "node"],
+      "properties": {
+        "job_id": {"type": "integer"}, "node": {"type": "string"}, "t_start": {"type": ["string", "null"]},
+        "elapsed_s": {"type": ["number", "null"]}, "cap_s": {"type": "number"}, "frac_cap": {"type": "number"},
+        "pid": {"type": "integer"}, "rss_gb": {"type": "number"}, "cpu_pct": {"type": "integer"},
+        "shell": {"type": "integer"}, "global_it": {"type": "integer"}, "av": {"type": "number"},
+        "t_gas": {"type": "number"}, "last_line_age_s": {"type": "integer"},
+        "warnings": {"type": "object", "properties": {"brent_fallbacks": {"type": "integer"}, "maxit": {"type": "integer"}}}
+      }}},
+    "resources": {
+      "type": "object",
+      "properties": {
+        "load1": {"type": "number"}, "cores": {"type": ["integer", "null"]},
+        "mem_total_gb": {"type": "number"}, "mem_avail_gb": {"type": "number"},
+        "disk": {"type": "array", "items": {"type": "object", "required": ["mount", "free_gb"],
+                 "properties": {"mount": {"type": "string"}, "path": {"type": "string"}, "free_gb": {"type": "number"}}}}
+      }
+    },
+    "storage": {
+      "type": "object", "required": ["struct_dir_local", "stored_nodes", "backlog_nodes", "failed_storage"],
+      "properties": {"struct_dir_local": {"type": "boolean"}, "stored_nodes": {"type": ["integer", "null"]},
+                     "backlog_nodes": {"type": ["integer", "null"]}, "failed_storage": {"type": "integer"}}
+    },
+    "eta_inputs": {
+      "type": "object", "required": ["axes", "samples", "queue", "workers", "cap_s"],
+      "properties": {
+        "axes": {"type": "array", "items": {"type": "string"}},
+        "samples": {"type": "array", "items": {"type": "object", "required": ["idx", "exec_s", "censored"],
+                    "properties": {"idx": {"type": "array", "items": {"type": ["integer", "null"]}},
+                                   "exec_s": {"type": "number"}, "censored": {"type": "boolean"}}}},
+        "queue": {"type": "array", "items": {"type": "array", "items": {"type": ["integer", "null"]}}},
+        "workers": {"type": ["integer", "null"]}, "cap_s": {"type": ["number", "null"]}
+      }
+    },
+    "events": {"type": "array", "items": {
+      "type": "object", "required": ["t", "kind", "node", "sev", "text"],
+      "properties": {"t": {"type": "string"}, "kind": {"enum": ["job_started", "job_finished", "postproc_error"]},
+                     "node": {"type": "string"}, "sev": {"enum": ["info", "warn", "error"]}, "text": {"type": "string"}}}},
+    "events_truncated": {"type": "boolean"},
+    "urgent": {"type": "array", "items": {
+      "type": "object", "required": ["kind", "text"],
+      "properties": {"kind": {"enum": ["stale_running", "template_mismatch", "binary_mismatch", "disk_low"]},
+                     "text": {"type": "string"}}}},
+    "physics": {"type": "array", "items": {
+      "type": "object", "required": ["node", "job_id", "q"],
+      "properties": {
+        "node": {"type": "string"}, "job_id": {"type": "integer"},
+        "q": {"type": "object", "required": ["log_Tsurf", "log_Tdeep", "log_H2IR_tot", "op_col", "AV_HH2"],
+              "additionalProperties": false,
+              "properties": {"log_Tsurf": {"type": ["number", "null"]}, "log_Tdeep": {"type": ["number", "null"]},
+                             "log_H2IR_tot": {"type": ["number", "null"]}, "op_col": {"type": ["number", "null"]},
+                             "AV_HH2": {"type": ["number", "null"]}}},
+        "flags": {"type": "object"}}}},
+    "physics_meta": {
+      "type": "object", "required": ["h5py", "computed", "cached", "no_file", "failed", "deferred"],
+      "properties": {"h5py": {"type": "boolean"}, "computed": {"type": "integer"}, "cached": {"type": "integer"},
+                     "no_file": {"type": "integer"}, "failed": {"type": "integer"}, "deferred": {"type": "integer"},
+                     "skipped": {"type": ["string", "null"]}, "molfrac_source": {"type": "string"}}
+    }
+  },
+  "definitions": {
+    "class": {"enum": ["ok", "warn", "bad", "run", "pending"]},
+    "node": {
+      "type": "object", "required": ["id", "idx", "job_id", "status", "class", "reruns"],
+      "properties": {
+        "id": {"type": "string"}, "idx": {"type": "array", "items": {"type": ["integer", "null"]}},
+        "job_id": {"type": "integer"}, "status": {"type": "string"}, "class": {"$ref": "#/definitions/class"},
+        "reruns": {"type": "integer", "minimum": 0},
+        "t_start": {"type": "string"}, "t_finish": {"type": "string"}, "exec_s": {"type": "number"},
+        "converged": {"type": ["boolean", "string"]}, "global_it": {"type": "integer"}, "eps": {"type": "number"},
+        "tsearch_flagged": {"type": "integer"}, "chem_relaxed": {"type": "integer"},
+        "uvcont": {"type": "object", "properties": {"applied": {"type": "boolean"}, "closure_ok": {"type": "boolean"},
+                                                    "error": {"type": "string"}}},
+        "postproc_error": {"type": "string"}
+      }
+    }
+  }
+}
