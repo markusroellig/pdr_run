@@ -33,6 +33,7 @@ Design rules
 """
 
 import copy
+import fnmatch
 import io
 import json
 import logging
@@ -307,6 +308,8 @@ def _resolve_storage(ctx: Ctx) -> Dict[str, Any]:
             use_mount=sc.get('use_mount', False),
             remote_path_prefix=sc.get('remote_path_prefix', None),
             mount_point=sc.get('mount_point'),
+            rclone_opts={k: v for k, v in sc.items()
+                         if k.startswith('rclone_') and k != 'rclone_remote'},
         )
     stype = os.environ.get('PDR_STORAGE_TYPE', 'local')
     return dict(
@@ -811,44 +814,57 @@ def _storage_sftp(ctx: Ctx, st):
 
 
 def _storage_rclone(ctx: Ctx, st):
+    """Probe the real RCloneStorage code path (store, overwrite, read back,
+    delete) with short timeouts and no retries. Never creates a bucket."""
     t = ctx.timeout
     try:
         subprocess.run(['rclone', 'version'], check=True, capture_output=True, timeout=t)
     except FileNotFoundError:
         _fail("rclone is not installed or not in PATH")
     from pdr_run.storage.remote import RCloneStorage
+    opts = dict(st.get('rclone_opts') or {})
+    opts.update(rclone_contimeout_s=max(t, 1), rclone_idle_timeout_s=max(t, 1),
+                rclone_call_timeout_s=max(2 * t, 5), rclone_max_retries=0)
     storage = RCloneStorage({'base_dir': st['base_dir'], 'rclone_remote': st['rclone_remote'],
                              'use_mount': st['use_mount'],
-                             'remote_path_prefix': st['remote_path_prefix']})
-    payload = _probe_payload()
-    remote = storage._get_full_remote_path(f"preflight_probe_{uuid.uuid4().hex[:8]}")
-    flags = ['--contimeout', f"{int(max(t, 1))}s", '--timeout', f"{int(max(t, 1))}s",
-             '--retries', '1', '--low-level-retries', '1']
-    hard = max(3 * t, 10)
+                             'remote_path_prefix': st['remote_path_prefix'], **opts})
+    where = st['rclone_remote']
     t0 = time.monotonic()
+    if storage._is_object_store():
+        bucket = storage.bucket_of_remote()
+        if bucket is None:
+            return WARN, (f"rclone {where}: S3 remote without bucket; the first path component of "
+                          "each model_path is taken as bucket. No write probe (never creates "
+                          "buckets); better: rclone_remote: <remote>:<bucket>/<prefix>")
+        exists = storage.bucket_exists(bucket)
+        if exists is False:
+            _fail(f"rclone {where}: bucket '{bucket}' missing; ask an admin to create it "
+                  "(pdr_run never creates buckets)")
+        if exists is None:
+            _fail(f"rclone {where}: cannot list buckets: {_short(storage.last_error, 140)}")
+    payload = _probe_payload()
+    rel = f"preflight_probe_{uuid.uuid4().hex[:8]}"
     with tempfile.TemporaryDirectory(prefix='pdr-preflight-') as tmp:
-        src = os.path.join(tmp, 'src.bin')
+        src, dst = os.path.join(tmp, 'src.bin'), os.path.join(tmp, 'dst.bin')
         with open(src, 'wb') as fh:
             fh.write(payload)
         try:
-            up = subprocess.run(['rclone', 'copyto', src, remote] + flags,
-                                capture_output=True, timeout=hard)
-            if up.returncode != 0:
-                _fail(f"rclone copyto to {st['rclone_remote']} failed: "
-                      f"{_short(up.stderr.decode(errors='replace'), 120)}")
-            cat = subprocess.run(['rclone', 'cat', remote] + flags,
-                                 capture_output=True, timeout=hard)
-            same = cat.returncode == 0 and cat.stdout == payload
+            for step in ('write', 'overwrite'):
+                if not storage.store_file(src, rel):
+                    _fail(f"rclone {where}: {step} failed: {_short(storage.last_error, 140)}")
+            if not storage.retrieve_file(rel, dst):
+                _fail(f"rclone {where}: read-back failed: {_short(storage.last_error, 140)}")
+            with open(dst, 'rb') as fh:
+                same = fh.read() == payload
         finally:
-            try:
-                subprocess.run(['rclone', 'deletefile', remote] + flags,
-                               capture_output=True, timeout=hard)
-            except Exception:  # noqa: BLE001
-                pass
+            storage.delete_file(rel)
+        gone = not storage.file_exists(rel)
     dt = (time.monotonic() - t0) * 1e3
     if not same:
-        _fail(f"rclone {st['rclone_remote']}: read-back failed or differs")
-    return PASS, f"rclone {st['rclone_remote']}: write/read/compare/delete OK ({dt:.0f} ms)"
+        _fail(f"rclone {where}: read-back differs from what was written")
+    if not gone:
+        return WARN, f"rclone {where}: probe object {rel} could not be deleted"
+    return PASS, f"rclone {where}: write/overwrite/read/compare/delete OK ({dt:.0f} ms)"
 
 
 def check_storage(ctx: Ctx):
@@ -1200,6 +1216,13 @@ def check_compression(ctx: Ctx):
     pats = (ctx.eff.get('storage') or {}).get('compress_files') or []
     if isinstance(pats, str):
         pats = [pats]
+    st = _resolve_storage(ctx)
+    remote = st['type'] in ('sftp', 'rclone')
+    text_ok = any(fnmatch.fnmatchcase(n, p) for p in pats for n in ('TEXTOUT', 'TEXTOUT_j001'))
+    if remote and not text_ok:
+        return WARN, ("storage.compress_files does not cover TEXTOUT*: the screen logs (large ASCII, "
+                      "can exceed 1 GB) are uploaded uncompressed; recommended for remote storage: "
+                      '["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]')
     if not pats:
         return PASS, "storage.compress_files: none (results stored uncompressed)"
     return PASS, ("storage.compress_files: " + ", ".join(pats)

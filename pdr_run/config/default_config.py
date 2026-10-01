@@ -97,6 +97,11 @@ STORAGE_CONFIG = {
     'password': None,               # For SFTP/FTP
     'use_local_copy': True,         # Keep local copy when using remote storage
     'remote_path_prefix': None,     # Optional prefix to strip from remote paths (rclone)
+    # rclone/S3 tuning (all optional, see README "RClone storage on S3"):
+    #   rclone_remote_type (auto), rclone_chunk_size_mb (64), rclone_upload_cutoff_mb (256),
+    #   rclone_upload_concurrency (4), rclone_contimeout_s (30), rclone_idle_timeout_s (300),
+    #   rclone_min_rate_mb_s (1.0), rclone_verify (True), rclone_max_retries (3)
+    # Recommended for grid 1 on a remote backend: compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]
     'compress_files': [],           # fnmatch patterns of stored files to gzip whole-file (stored as <name>.gz); [] = none
 }
 

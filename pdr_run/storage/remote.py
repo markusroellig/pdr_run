@@ -390,9 +390,56 @@ class SFTPStorage(RemoteStorage):
                 f"{self.host} after retries (treating as absent): {e}")
             return False
 
+class _RClonePermanentError(Exception):
+    """An rclone failure that retrying cannot fix (bad credentials, missing
+    bucket, key too long, fatal rclone exit status). Deliberately NOT a
+    RuntimeError/OSError, so it is outside ``_RCLONE_RETRYABLE``."""
+
+
+# rclone remote types that are flat object stores: "directories" are only key
+# prefixes, ``rclone mkdir`` of a path inside a bucket does nothing, and
+# ``mkdir``/``copyto`` towards a bucket that does not exist tries to CREATE
+# the bucket (which hangs or fails on a server that does not allow it).
+_OBJECT_STORE_TYPES = frozenset(
+    {'s3', 'b2', 'swift', 'azureblob', 'google cloud storage'})
+
+# rclone exit codes (rclone docs, "Exit Code"): 3 = directory not found,
+# 4 = file not found, 7 = fatal error (more retries will not help).
+_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND, _RC_FATAL = 3, 4, 7
+
+# Lower-case stderr fragments of failures that are identical on every retry.
+_RCLONE_PERMANENT_MARKERS = (
+    'accessdenied', 'access denied', 'invalidaccesskeyid',
+    'signaturedoesnotmatch', 'nosuchbucket', 'status code: 403',
+    'status code: 401', 'entitytoolarge', 'keytoolong',
+)
+_RCLONE_NOT_FOUND_MARKERS = ('directory not found', 'object not found',
+                             'file not found')
+
+_MIB = 1024 * 1024
+_S3_MAX_PARTS = 9000          # hard limit is 10 000; keep a margin
+_S3_MAX_KEY_BYTES = 1024
+
+
 class RCloneStorage(Storage):
-    """RClone-based remote storage implementation."""
-    
+    """RClone-based remote storage implementation.
+
+    Object stores (S3): no ``mkdir``; an existing object is deleted
+    explicitly before the upload; every call has rclone connect/idle timeouts
+    and a hard subprocess timeout scaled with the file size; large files go
+    through multipart upload with a chunk size that keeps the part count below
+    the S3 limit; the stored object is verified (size, MD5 if the server
+    knows it) after every upload. See README, "RClone storage on S3".
+
+    Optional config keys: ``rclone_remote_type`` (skip auto-detection),
+    ``rclone_chunk_size_mb`` (64), ``rclone_upload_cutoff_mb`` (256),
+    ``rclone_upload_concurrency`` (4), ``rclone_contimeout_s`` (30),
+    ``rclone_idle_timeout_s`` (300), ``rclone_min_rate_mb_s`` (1.0; the
+    subprocess timeout is 300 s + size / rate), ``rclone_verify`` (True),
+    ``rclone_max_retries`` (3), ``rclone_call_timeout_s`` (120; bound of
+    every metadata call, 2.5x of it is the base of the transfer timeout).
+    """
+
     def __init__(self, config):
         """Initialize RClone storage."""
         self.base_dir = config.get('base_dir', './data')
@@ -400,10 +447,22 @@ class RCloneStorage(Storage):
         self.mount_point = config.get('mount_point', os.path.join(self.base_dir, 'mnt'))
         self.use_mount = config.get('use_mount', False)
         self.remote_path_prefix = config.get('remote_path_prefix', None)
-        
+        self.remote_type = (config.get('rclone_remote_type') or '').lower()
+        self.chunk_size_mb = int(config.get('rclone_chunk_size_mb') or 64)
+        self.upload_cutoff_mb = int(config.get('rclone_upload_cutoff_mb') or 256)
+        self.upload_concurrency = int(config.get('rclone_upload_concurrency') or 4)
+        self.contimeout_s = float(config.get('rclone_contimeout_s') or 30)
+        self.idle_timeout_s = float(config.get('rclone_idle_timeout_s') or 300)
+        self.min_rate_mb_s = float(config.get('rclone_min_rate_mb_s') or 1.0)
+        self.call_timeout_s = float(config.get('rclone_call_timeout_s') or 120)
+        self.verify = bool(config.get('rclone_verify', True))
+        retries = config.get('rclone_max_retries')
+        self.max_retries = 3 if retries is None else int(retries)
+        self.last_error = None   # message of the last failed operation
+
         # Add logger for consistency with SFTPStorage
         self.logger = logging.getLogger("dev")
-        
+
         # Parse remote configuration
         if ':' in self.remote:
             # Remote includes path: "remote_name:/path/to/base"
@@ -412,86 +471,234 @@ class RCloneStorage(Storage):
             # Remote is just the name: "remote_name"
             self.remote_name = self.remote
             self.remote_base_path = ''
-        
+
         # Verify rclone is installed
         try:
             subprocess.run(['rclone', 'version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except (subprocess.SubprocessError, FileNotFoundError):
             logger.error("rclone is not installed or not in PATH")
             raise RuntimeError("rclone is not installed or not in PATH")
-    
+
+    # ------------------------------------------------------------ helpers
+
+    def _retrying(self):
+        return retry_with_backoff(
+            max_retries=self.max_retries, initial_delay=2.0, backoff=2.0,
+            exceptions=_RCLONE_RETRYABLE,
+            giveup=(FileNotFoundError, _RClonePermanentError))
+
+    def _detect_remote_type(self):
+        """Backend type of the configured remote ('s3', 'sftp', ...), cached;
+        '' if it cannot be determined (then the generic, non-S3 path is used)."""
+        if self.remote_type:
+            return self.remote_type
+        env = os.environ.get(f"RCLONE_CONFIG_{self.remote_name.upper()}_TYPE")
+        if env:
+            self.remote_type = env.lower()
+            return self.remote_type
+        try:
+            res = subprocess.run(['rclone', 'listremotes', '--long'],
+                                 capture_output=True, text=True, timeout=30)
+            if res.returncode == 0:
+                for line in str(res.stdout).splitlines():
+                    name, _, rtype = line.partition(':')
+                    if name.strip() == self.remote_name:
+                        self.remote_type = rtype.strip().lower()
+                        break
+        except (subprocess.SubprocessError, OSError, TypeError):
+            pass
+        return self.remote_type
+
+    def _is_object_store(self):
+        return self._detect_remote_type() in _OBJECT_STORE_TYPES
+
+    def _global_flags(self):
+        flags = ['--contimeout', f"{int(self.contimeout_s)}s",
+                 '--timeout', f"{int(self.idle_timeout_s)}s",
+                 '--retries', '1', '--low-level-retries', '3']
+        if self._detect_remote_type() == 's3':
+            # never let rclone create/check a bucket: a missing bucket must
+            # fail with NoSuchBucket, not hang in CreateBucket
+            flags.append('--s3-no-check-bucket')
+        return flags
+
+    def _run(self, args, timeout, extra_flags=()):
+        """Run ``rclone <args> <flags>``; returns the CompletedProcess.
+        ``timeout`` (s) is a hard bound: a hang can never block a worker."""
+        cmd = ['rclone'] + list(args) + self._global_flags() + list(extra_flags)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    def _check(self, result, what):
+        """Raise on a non-zero rclone exit: permanent errors as
+        _RClonePermanentError, everything else as (retryable) RuntimeError."""
+        if result.returncode == 0:
+            return
+        err = (result.stderr or '').strip()
+        low = err.lower()
+        if 'nosuchbucket' in low:
+            raise _RClonePermanentError(
+                f"{what}: bucket does not exist (ask an admin to create it); {err[-200:]}")
+        if result.returncode == _RC_FATAL or any(m in low for m in _RCLONE_PERMANENT_MARKERS):
+            raise _RClonePermanentError(f"{what} failed (rc={result.returncode}): {err[-300:]}")
+        raise RuntimeError(f"{what} failed (rc={result.returncode}): {err[-300:]}")
+
+    def _transfer_timeout(self, size):
+        return self.call_timeout_s * 2.5 + size / (self.min_rate_mb_s * _MIB)
+
+    def _upload_flags(self, size):
+        if self._detect_remote_type() != 's3':
+            return []
+        # keep the part count below the S3 limit of 10 000
+        chunk = max(self.chunk_size_mb, -(-size // (_S3_MAX_PARTS * _MIB)))
+        return ['--s3-chunk-size', f"{chunk}M",
+                '--s3-upload-cutoff', f"{max(self.upload_cutoff_mb, 5)}M",
+                '--s3-upload-concurrency', str(self.upload_concurrency)]
+
     def _get_full_remote_path(self, remote_path):
-        """Construct full remote path combining base path and relative path."""
+        """Construct the full ``remote:path`` from base path and relative path.
 
-        # If a prefix is defined, remove it from the remote path
-        if self.remote_path_prefix and remote_path.startswith(self.remote_path_prefix):
-            remote_path = remote_path[len(self.remote_path_prefix):]
-            # Remove leading slash if any to make it a relative path
-            remote_path = remote_path.lstrip('/')
-
-        # Remove leading slash from remote_path if present to avoid double slashes
-        # when joining with base path
-        clean_remote_path = remote_path.lstrip('/')
-
-        if self.remote_base_path:
-            # Join base path with remote path
-            full_path = os.path.join(self.remote_base_path, clean_remote_path).replace('\\', '/')
-            return f"{self.remote_name}:{full_path}"
-        else:
-            # No base path - for consistency, ensure path starts with '/' if not empty
-            if clean_remote_path: # Only prepend '/' if there is actually a path
-                clean_remote_path = '/' + clean_remote_path
-            return f"{self.remote_name}:{clean_remote_path}"
-    
-    def store_file(self, local_path, remote_path):
-        """Store a file to remote storage using rclone with exact filename control.
-
-        Uses rclone copyto for atomic file-to-file transfer, which avoids race
-        conditions in parallel execution (fixes GitHub issue #10). The
-        mkdir+copyto attempt is retried (bounded, with backoff) on transient
-        rclone/transport failures - a single flaky remote-endpoint call must
-        not lose a multi-hour grid node's result file.
+        - ``remote_path_prefix`` is stripped when it is a whole leading path
+          component sequence (``/a/b`` strips ``/a/b/x`` but not ``/a/bc/x``).
+        - Empty and ``.`` components are dropped, so no ``//`` ends up in a key.
+        - ``..`` is refused: it would leave the configured prefix.
+        - Without a base path the result is ``remote:/path`` (absolute) for
+          ordinary remotes and ``remote:path`` for object stores, where the
+          first component is the bucket and a leading ``/`` is meaningless.
         """
-        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_RCLONE_RETRYABLE)
+        rel = str(remote_path).replace('\\', '/')
+        prefix = (self.remote_path_prefix or '').replace('\\', '/').rstrip('/')
+        if prefix and (rel == prefix or rel.startswith(prefix + '/')):
+            rel = rel[len(prefix):]
+        parts = [p for p in rel.split('/') if p not in ('', '.')]
+        if '..' in parts:
+            raise ValueError(f"'..' in remote path is not allowed: {remote_path!r}")
+        rel = '/'.join(parts)
+
+        base = self.remote_base_path.rstrip('/')
+        if base:
+            return f"{self.remote_name}:{base}/{rel}" if rel else f"{self.remote_name}:{base}"
+        if rel and not self._is_object_store():
+            rel = '/' + rel
+        return f"{self.remote_name}:{rel}"
+
+    @staticmethod
+    def _local_md5(path):
+        import hashlib
+        h = hashlib.md5()
+        with open(path, 'rb') as fh:
+            for block in iter(lambda: fh.read(4 * _MIB), b''):
+                h.update(block)
+        return h.hexdigest()
+
+    def _remote_stat(self, full_remote_path):
+        """``{'size': int, 'md5': str|None}`` of one object, or None if absent."""
+        res = self._run(['lsjson', '--hash',
+                         full_remote_path], timeout=self.call_timeout_s)
+        if res.returncode in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND) or (
+                res.returncode != 0 and any(
+                    m in (res.stderr or '').lower() for m in _RCLONE_NOT_FOUND_MARKERS)):
+            return None
+        self._check(res, 'rclone lsjson')
+        import json
+        entries = [e for e in json.loads(res.stdout or '[]') if not e.get('IsDir')]
+        if not entries:
+            return None
+        e = entries[0]
+        md5 = (e.get('Hashes') or {}).get('MD5') or (e.get('Hashes') or {}).get('md5')
+        return {'size': int(e.get('Size', -1)), 'md5': md5 or None}
+
+    def delete_file(self, remote_path):
+        """Delete one object/file; True if it is gone afterwards (an absent
+        file counts as deleted). Bounded retry with backoff."""
+        @self._retrying()
         def _attempt():
-            full_remote_path = self._get_full_remote_path(remote_path)
-
-            # Get the target directory
-            remote_dir = os.path.dirname(full_remote_path.split(':', 1)[1])
-
-            # Ensure remote directory exists
-            if remote_dir:
-                mkdir_cmd = ['rclone', 'mkdir', f"{self.remote_name}:{remote_dir}"]
-                subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            # Use copyto for atomic file-to-file transfer
-            # This is safer for parallel execution than copy+moveto
-            cmd = ['rclone', 'copyto', local_path, full_remote_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                raise RuntimeError(f"RClone copyto failed (rc={result.returncode}): {result.stderr}")
-
-            self.logger.info(f"Stored {local_path} as {full_remote_path}")
-
+            full = self._get_full_remote_path(remote_path)
+            res = self._run(['deletefile', full], timeout=self.call_timeout_s)
+            if res.returncode in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND) or (
+                    res.returncode != 0 and any(
+                        m in (res.stderr or '').lower() for m in _RCLONE_NOT_FOUND_MARKERS)):
+                return
+            self._check(res, 'rclone deletefile')
         try:
             _attempt()
             return True
-        except subprocess.SubprocessError as e:
-            self.logger.error(f"Failed to upload file with rclone after retries: {e}")
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
+            self.logger.error(f"Failed to delete {remote_path} with rclone: {e}")
             return False
-        except Exception as e:
-            self.logger.error(f"Unexpected error in store_file after retries: {e}")
+
+    # -------------------------------------------------------------- store
+
+    def store_file(self, local_path, remote_path):
+        """Store a file with rclone; True only if it was stored and verified.
+
+        Object stores (S3): there is no rename; the old object is deleted
+        explicitly, then ``copyto`` writes the final key (multipart for large
+        files; the object only becomes visible when the upload completes), then
+        size and MD5 are checked. Any failure restarts the whole sequence
+        (bounded retry with backoff), so a partial or mismatching object is
+        deleted and uploaded again. Other remotes: mkdir (bounded), copyto.
+        """
+        @self._retrying()
+        def _attempt():
+            size = os.path.getsize(local_path)      # FileNotFoundError: never retried
+            full = self._get_full_remote_path(remote_path)
+            object_store = self._is_object_store()
+            if object_store and len(full.split(':', 1)[1].encode()) > _S3_MAX_KEY_BYTES:
+                raise _RClonePermanentError(
+                    f"object name longer than {_S3_MAX_KEY_BYTES} bytes: {full}")
+
+            if object_store:
+                if self._remote_stat(full) is not None:
+                    res = self._run(['deletefile', full], timeout=self.call_timeout_s)
+                    if res.returncode not in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND):
+                        self._check(res, 'rclone deletefile (replace)')
+            else:
+                remote_dir = os.path.dirname(full.split(':', 1)[1])
+                if remote_dir:
+                    self._check(self._run(['mkdir', f"{self.remote_name}:{remote_dir}"],
+                                          timeout=self.call_timeout_s), 'rclone mkdir')
+
+            res = self._run(['copyto', local_path, full],
+                            timeout=self._transfer_timeout(size),
+                            extra_flags=self._upload_flags(size))
+            self._check(res, 'rclone copyto')
+
+            if self.verify:
+                self._verify(full, local_path, size)
+            self.logger.info(f"Stored {local_path} as {full}")
+
+        try:
+            _attempt()
+            self.last_error = None
+            return True
+        except Exception as e:  # noqa: BLE001 - public contract: bool, never raise
+            self.last_error = str(e)
+            self.logger.error(f"Failed to store {local_path} with rclone after retries: {e}")
             return False
+
+    def _verify(self, full, local_path, size):
+        """Size always; MD5 whenever the server reports one (single-part
+        objects: the ETag; rclone also stores the MD5 of multipart objects
+        as metadata). Raises RuntimeError (retryable) on any mismatch."""
+        stat = self._remote_stat(full)
+        if stat is None:
+            raise RuntimeError(f"verification failed: {full} not found after upload")
+        if stat['size'] != size:
+            raise RuntimeError(
+                f"verification failed: {full} has {stat['size']} bytes, local file {size}")
+        if stat['md5']:
+            local = self._local_md5(local_path)
+            if stat['md5'].lower() != local:
+                raise RuntimeError(
+                    f"verification failed: MD5 of {full} is {stat['md5']}, local {local}")
 
     def retrieve_file(self, remote_path, local_path):
         """Download a file from remote storage using rclone.
 
         Bounded retry with backoff on transient rclone/transport failures.
         """
-        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_RCLONE_RETRYABLE)
+        @self._retrying()
         def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
 
@@ -500,129 +707,128 @@ class RCloneStorage(Storage):
             if local_dir:
                 os.makedirs(local_dir, exist_ok=True)
 
-            # Use rclone copyto for exact file-to-file copy
-            cmd = ['rclone', 'copyto', full_remote_path, local_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                raise RuntimeError(f"RClone retrieve failed (rc={result.returncode}): {result.stderr}")
-
+            stat = self._remote_stat(full_remote_path) if self._is_object_store() else None
+            timeout = self._transfer_timeout(stat['size'] if stat else 0) if stat else 3600.0
+            res = self._run(['copyto', full_remote_path, local_path], timeout=timeout)
+            self._check(res, 'rclone retrieve')
+            if stat and os.path.getsize(local_path) != stat['size']:
+                raise RuntimeError(
+                    f"downloaded {local_path} has {os.path.getsize(local_path)} bytes, "
+                    f"remote {stat['size']}")
             self.logger.info(f"Retrieved {full_remote_path} to {local_path}")
 
         try:
             _attempt()
+            self.last_error = None
             return True
-        except subprocess.SubprocessError as e:
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
             self.logger.error(f"Failed to download file with rclone after retries: {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Unexpected error in retrieve_file after retries: {e}")
             return False
 
     def list_files(self, path):
-        """List files in remote storage using rclone. Bounded retry on
-        transient rclone/transport failures."""
-        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_RCLONE_RETRYABLE)
+        """List the entries of one remote directory with a single ``lsf``
+        (sub-directories carry a trailing ``/``). A directory that does not
+        exist lists as empty. Bounded retry on transient failures."""
+        @self._retrying()
         def _attempt():
             full_remote_path = self._get_full_remote_path(path)
-
-            # Use simple lsf which just returns filenames - much cleaner!
-            cmd = ['rclone', 'lsf', full_remote_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                raise RuntimeError(f"RClone lsf failed (rc={result.returncode}): {result.stderr}")
-
-            # Split the output into lines and strip whitespace
-            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            res = self._run(['lsf', full_remote_path], timeout=self.call_timeout_s)
+            if res.returncode == _RC_DIR_NOT_FOUND or (
+                    res.returncode != 0 and any(
+                        m in (res.stderr or '').lower() for m in _RCLONE_NOT_FOUND_MARKERS)):
+                return []
+            self._check(res, 'rclone lsf')
+            return [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
         try:
-            return _attempt()
-        except subprocess.SubprocessError as e:
+            result = _attempt()
+            self.last_error = None
+            return result
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
             self.logger.error(f"Failed to list files with rclone after retries: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Unexpected error in list_files after retries: {e}")
             return []
 
     def sync_directory(self, local_dir, remote_dir):
-        """Synchronize an entire directory to remote storage. Bounded retry
-        on transient rclone/transport failures."""
-        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_RCLONE_RETRYABLE)
+        """Copy an entire directory to remote storage. Bounded retry on
+        transient rclone/transport failures. No mkdir on object stores."""
+        @self._retrying()
         def _attempt():
             full_remote_path = self._get_full_remote_path(remote_dir)
-
-            # Ensure remote directory exists
-            mkdir_cmd = ['rclone', 'mkdir', full_remote_path]
-            subprocess.run(mkdir_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            # Sync the directory
-            cmd = ['rclone', 'copy', local_dir, full_remote_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                raise RuntimeError(f"RClone sync failed (rc={result.returncode}): {result.stderr}")
-
+            if not self._is_object_store():
+                self._check(self._run(['mkdir', full_remote_path], timeout=self.call_timeout_s),
+                            'rclone mkdir')
+            total = sum(os.path.getsize(os.path.join(d, f))
+                        for d, _, fs in os.walk(local_dir) for f in fs)
+            res = self._run(['copy', local_dir, full_remote_path],
+                            timeout=self._transfer_timeout(total),
+                            extra_flags=self._upload_flags(total))
+            self._check(res, 'rclone copy')
             self.logger.info(f"Synchronized {local_dir} to {full_remote_path}")
 
         try:
             _attempt()
+            self.last_error = None
             return True
-        except Exception as e:
-            self.logger.error(f"Failed to sync directory after retries: {str(e)}", exc_info=True)
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
+            self.logger.error(f"Failed to sync directory after retries: {e}")
             return False
-    
-    # stderr substrings that indicate rclone could not reach the remote at
-    # all (worth retrying), as opposed to a normal "path does not exist"
-    # non-zero exit (the expected, common case for a not-yet-computed grid
-    # node - must not be retried, or every fresh node pays 3 retries).
-    _RCLONE_TRANSPORT_ERROR_MARKERS = (
-        'timeout', 'timed out', 'connection refused', "couldn't connect",
-        'no such host', 'network is unreachable', 'i/o timeout',
-        'temporary failure', 'connection reset', 'broken pipe',
-    )
 
     def file_exists(self, remote_path):
-        """Check if a file exists on the remote server using rclone.
+        """Check if a file exists on the remote using one ``lsf``.
 
-        A transient connection failure here must not be mistaken for "file
-        does not exist" - that would make ``run_kosma_tau`` needlessly
-        re-run a multi-hour PDR model that is already stored remotely. Only
-        exit statuses whose stderr looks like a transport/connectivity
-        problem are retried; the ordinary "path not found" non-zero exit is
-        not retried (it is the expected, common case for a fresh node and
-        must stay cheap).
+        ``rclone lsf`` exits 0 with empty output for a missing file in an
+        existing directory, and 3 ("directory not found") if the directory
+        or bucket is missing: both mean "absent". Any other failure
+        (timeout, connection, credentials) must not be mistaken for "absent"
+        (a stored multi-hour node would be recomputed): it is retried, and if
+        it persists it is logged as an ERROR and False is returned (the
+        contract of the other backends).
         """
-        @retry_with_backoff(max_retries=3, initial_delay=2.0, backoff=2.0,
-                             exceptions=_RCLONE_RETRYABLE)
+        @self._retrying()
         def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
-
-            # Use rclone lsf to check if the specific file exists
-            cmd = ['rclone', 'lsf', full_remote_path]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                stderr_lower = (result.stderr or '').lower()
-                if any(marker in stderr_lower for marker in
-                       self._RCLONE_TRANSPORT_ERROR_MARKERS):
-                    raise RuntimeError(
-                        f"RClone lsf transport error (rc={result.returncode}): {result.stderr}")
-                # Otherwise: treat as "path does not exist" (not retryable).
-
-            # If lsf returns output, the file exists
-            return bool(result.stdout.strip())
+            res = self._run(['lsf', full_remote_path], timeout=self.call_timeout_s)
+            if res.returncode in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND) or (
+                    res.returncode != 0 and any(
+                        m in (res.stderr or '').lower() for m in _RCLONE_NOT_FOUND_MARKERS)):
+                return False
+            self._check(res, 'rclone lsf')
+            return bool(res.stdout.strip())
 
         try:
-            return _attempt()
-        except subprocess.SubprocessError as e:
-            # If the command fails, likely the file doesn't exist
-            self.logger.debug(f"Error checking file existence with rclone after retries: {e}")
+            result = _attempt()
+            self.last_error = None
+            return result
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
+            self.logger.error(
+                f"Could not determine whether {remote_path} exists via rclone "
+                f"(treated as absent): {e}")
             return False
-        except Exception as e:
-            self.logger.warning(
-                f"Could not determine whether {remote_path} exists via "
-                f"rclone after retries (treating as absent): {e}")
-            return False
+
+    def bucket_of_remote(self):
+        """Bucket (first path component) of an object-store remote with a
+        base path, e.g. ``noices`` for ``kosmatau:noices/grid1``; None if the
+        remote has no base path or is not an object store."""
+        if not self._is_object_store():
+            return None
+        parts = [p for p in self.remote_base_path.split('/') if p]
+        return parts[0] if parts else None
+
+    def bucket_exists(self, bucket):
+        """True/False if *bucket* is/is not listed by ``rclone lsd remote:``;
+        None if the listing itself failed (no permission, no connection).
+        pdr_run never creates buckets."""
+        try:
+            res = self._run(['lsd', f"{self.remote_name}:"], timeout=self.call_timeout_s)
+        except (subprocess.SubprocessError, OSError) as e:
+            self.last_error = str(e)
+            return None
+        if res.returncode != 0:
+            self.last_error = (res.stderr or '').strip()[-300:]
+            return None
+        names = [line.split()[-1] for line in res.stdout.splitlines() if line.strip()]
+        return bucket in names

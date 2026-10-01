@@ -83,6 +83,9 @@ def get_storage_backend(config=None):
                 'use_mount': config['storage'].get('use_mount', False),
                 'remote_path_prefix': config['storage'].get('remote_path_prefix', None)
             }
+            # tuning/override keys (rclone_remote_type, rclone_chunk_size_mb, ...)
+            rclone_config.update({k: v for k, v in config['storage'].items()
+                                  if k.startswith('rclone_') and k != 'rclone_remote'})
         else:
             rclone_config = {
                 'base_dir': os.environ.get("PDR_STORAGE_DIR", "/tmp"),

@@ -679,6 +679,25 @@ def gunzip_file(src, dst):
         raise
 
 
+def _store_maybe_gz(storage, local_path, remote_path, patterns):
+    """``_store`` that honours ``storage.compress_files`` (stored as
+    ``<remote_path>.gz``); for the ONION and SIMLINE outputs, which have no
+    database column for the stored name. The temporary .gz is always removed."""
+    if not should_compress(patterns, os.path.basename(remote_path),
+                           os.path.basename(local_path)):
+        return _store(storage, local_path, remote_path)
+    gz_tmp = local_path + GZ_SUFFIX
+    try:
+        gzip_file(local_path, gz_tmp)
+        return _store(storage, gz_tmp, remote_path + GZ_SUFFIX)
+    except OSError as exc:
+        logger.error(f"Compressing {local_path} failed: {exc}")
+        return False
+    finally:
+        if os.path.exists(gz_tmp):
+            os.remove(gz_tmp)
+
+
 def _storage_has(storage, path):
     """Existence check through the backend (file_exists, else list_files)."""
     if hasattr(storage, 'file_exists'):
@@ -1075,6 +1094,7 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
             return
 
         chemchk_out_name = uploaded.get(chemchk_out_name, {}).get('name', chemchk_out_name)
+        text_out_name = uploaded.get(text_out_name, {}).get('name', text_out_name)
 
         # Use _session.query().filter_by().first() instead of _session.query().get() for complex queries
         instance = _session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
@@ -1311,15 +1331,17 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
         ]
         
         ok = True
+        patterns = compress_patterns(config)
         for f in onion_files:
             path = os.path.join('onionoutput', f)
             if os.path.exists(path):
-                ok &= _store(storage, path, os.path.join(
-                    model_path, 'oniongrid', 'ONION' + model + '.' + f))
-        ok &= _store(
+                ok &= _store_maybe_gz(storage, path, os.path.join(
+                    model_path, 'oniongrid', 'ONION' + model + '.' + f), patterns)
+        ok &= _store_maybe_gz(
             storage,
             os.path.join('onionoutput', 'TEXTOUT'),
-            os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec))
+            os.path.join(model_path, 'oniongrid', 'TEXTOUT' + model + "_" + spec),
+            patterns)
         if ok:
             logger.info(f"Successfully copied onion output for species {spec}")
         else:
@@ -1429,8 +1451,9 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         for fname in sorted(os.listdir(simline_out)):
             src = os.path.join(simline_out, fname)
             if os.path.isfile(src):
-                if _store(storage, src, os.path.join(
-                        model_path, 'simlinegrid', f'SIMLINE{model}.{fname}')):
+                if _store_maybe_gz(storage, src, os.path.join(
+                        model_path, 'simlinegrid', f'SIMLINE{model}.{fname}'),
+                        compress_patterns(config)):
                     stored += 1
                 else:
                     ok = False
@@ -1887,6 +1910,9 @@ def update_db_pdr_output_entries(job_id, session, config=None):
         chemchk_out_name = os.path.basename(
             resolve_stored_name(_storage, os.path.join(pdrgrid_dir, chemchk_out_name))
             or chemchk_out_name)
+        text_out_name = os.path.basename(
+            resolve_stored_name(_storage, os.path.join(pdrgrid_dir, text_out_name))
+            or text_out_name)
         
         logger.info(f"Creating database entries for existing remote model {model}")
         

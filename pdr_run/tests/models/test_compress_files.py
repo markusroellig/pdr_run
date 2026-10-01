@@ -184,3 +184,42 @@ def test_preflight_line(tmp_path):
     assert status == preflight.PASS and 'pdrchem*.hdf5' in detail
     ctx.eff = {'storage': {}}
     assert 'none' in preflight.check_compression(ctx)[1]
+
+
+# ------------------------------------------------------------------ TEXTOUT
+
+def test_textout_pattern_compresses_pdr_log(setup):
+    big = b'screen output line\n' * 20000
+    (setup['run'] / 'pdroutput' / 'TEXTOUT').write_bytes(big)
+    assert _copy(setup, ['TEXTOUT*']) is True
+    gz = setup['grid'] / 'TEXTOUTj001.gz'
+    assert gz.is_file() and not (setup['grid'] / 'TEXTOUTj001').exists()
+    assert gzip.decompress(gz.read_bytes()) == big
+    assert setup['job'].output_textout_file.endswith('TEXTOUTj001.gz')
+    assert setup['job'].log_file.endswith('TEXTOUTj001.gz')
+
+
+def test_onion_textout_and_outputs_follow_compress_files(setup):
+    onion = setup['run'] / 'onionoutput'
+    onion.mkdir()
+    (onion / 'TEXTOUT').write_bytes(b'onion log\n' * 1000)
+    (onion / 'jerg_CO.smli').write_bytes(b'data' * 100)
+    cfg = {'storage': {'compress_files': ['TEXTOUT*']}}
+    assert kosma_tau.copy_onionoutput('CO', setup['job'].id, config=cfg,
+                                      session=setup['session']) is True
+    onion_grid = setup['grid'].parent / 'oniongrid'
+    assert gzip.decompress((onion_grid / 'TEXTOUTj001_CO.gz').read_bytes()) == b'onion log\n' * 1000
+    assert (onion_grid / 'ONIONj001.jerg_CO.smli').read_bytes() == b'data' * 100
+    assert not glob.glob(str(onion / '*.gz'))
+
+
+def test_preflight_warns_when_remote_textout_is_not_compressed():
+    from pdr_run.cli import preflight
+    ctx = MagicMock()
+    ctx.eff = {'storage': {'type': 'rclone', 'compress_files': ['pdrchem*.hdf5']}}
+    status, detail = preflight.check_compression(ctx)
+    assert status == preflight.WARN and 'TEXTOUT' in detail
+    ctx.eff = {'storage': {'type': 'rclone', 'compress_files': ['TEXTOUT*', 'pdrchem*.hdf5']}}
+    assert preflight.check_compression(ctx)[0] == preflight.PASS
+    ctx.eff = {'storage': {'type': 'local', 'compress_files': []}}
+    assert preflight.check_compression(ctx)[0] == preflight.PASS

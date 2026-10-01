@@ -71,7 +71,8 @@ def test_retry_with_backoff_does_not_retry_unlisted_exceptions():
 def rclone_storage():
     with patch('subprocess.run') as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
-        storage = RCloneStorage({'base_dir': '/tmp', 'rclone_remote': 'testremote'})
+        storage = RCloneStorage({'base_dir': '/tmp', 'rclone_remote': 'testremote',
+                                 'rclone_remote_type': 'sftp', 'rclone_verify': False})
     storage.logger = MagicMock()
     return storage
 
@@ -107,15 +108,15 @@ def test_rclone_store_file_gives_up_after_bounded_retries(rclone_storage, tmp_pa
             result = rclone_storage.store_file(str(local_file), 'grid/model.hdf5')
 
     assert result is False
-    # 4 attempts (1 + 3 retries) x 2 subprocess calls (mkdir + copyto) = 8.
-    assert mock_run.call_count == 8
+    # 4 attempts (1 + 3 retries); the (failing) mkdir stops each attempt = 4 calls.
+    assert mock_run.call_count == 4
 
 
 def test_rclone_file_exists_does_not_retry_ordinary_not_found(rclone_storage):
     """The common case - a node that has not been computed yet - must not
     pay retry latency; only stderr that looks like a transport error is
-    retried (see RCloneStorage._RCLONE_TRANSPORT_ERROR_MARKERS)."""
-    not_found = MagicMock(returncode=1, stdout='', stderr='directory not found')
+    retried (rclone exit 3 / 'directory not found')."""
+    not_found = MagicMock(returncode=3, stdout='', stderr='directory not found')
 
     with patch('subprocess.run', return_value=not_found) as mock_run:
         with patch('time.sleep') as mock_sleep:
