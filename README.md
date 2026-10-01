@@ -7,6 +7,7 @@ Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
 ## Table of Contents
 - [Installation](#installation)
 - [Preflight Check](#preflight-check)
+- [Grid Status Snapshot](#grid-status-snapshot-pdr_run-status)
 - [Querying the configuration of a job](#querying-the-configuration-of-a-job)
 - [Configuration](#configuration)
   - [Configuration Precedence](#configuration-precedence)
@@ -157,6 +158,94 @@ Config: /tmp/ex/cfg.yaml | detailed log: /tmp/ex/logs/pdr_run.log | 0 WARNING+ l
 Exit codes: `0` nothing FAILed (WARN and SKIP are fine), `1` at least one FAIL. With `--check-json`
 the object has `ok`, `summary` (counts), `checks` (`name`, `status`, `detail`, `elapsed_s`),
 `config_file`, `log_files`.
+
+## Grid Status Snapshot (`pdr_run status`)
+
+Read-only JSON snapshot of one grid tier (one model name), the data source of the live
+grid dashboard. It reads the job database only (SQLite `mode=ro` + `query_only`; MySQL
+`SET SESSION TRANSACTION READ ONLY`, `SELECT` only; tables are reflected, nothing is created
+or altered, `ensure_additive_columns` is never called), so it is safe every few minutes while
+jobs run (0.05 s for 392 nodes, 0.1 s for 2535 nodes on SQLite). The only files it writes are
+`--out` and, with `--with-physics`, the physics cache.
+
+```bash
+export PDR_DB_TYPE=mysql PDR_DB_HOST=... PDR_DB_DATABASE=... PDR_DB_USERNAME=pdr_dash PDR_DB_PASSWORD=...
+pdr_run status --json --config grid1.yaml --model-name grid1_tier0 --out snapshot.json
+pdr_run status --json --config grid1.yaml --since 2026-10-03T14:00:00Z --with-physics --with-local
+pdr_run status --config grid1.yaml          # short human table
+```
+
+Database credentials come from `PDR_DB_*` exactly as for a run (environment > file >
+defaults), so a read-only MySQL user (`GRANT SELECT`) is sufficient. The payload never
+contains passwords, user names, DB host, or `config_json`; any configured secret that
+appears in a text field (for example a `postproc_error`) is replaced by `***`.
+`pdr_run status` is dispatched before the run CLI is imported (no `logs/` directory is
+created). After updating an existing installation, re-run `pip install -e .` so that the
+`pdr_run` console script points to `pdr_run.cli.entry`; `python -m pdr_run.cli.status` always works.
+
+| Option | Meaning |
+|---|---|
+| `--config FILE` | pdr_run YAML (database section, `pdr.model_name`, `pdr.max_walltime_s`) |
+| `--model-name NAME` | grid tier; default `pdr.model_name` |
+| `--registry FILE` | optional grid registry YAML (default `<config stem>.grid.yaml` if present): `id`, `tier`, `facet_axis`, `workers`, `cores_per_job`, `notebook_entry`, `axes` (override of `key/param/label/unit/log/values`), `status_classes`, `struct_dir`, `physics.molfrac_source` |
+| `--since TS` | delta mode: nodes, events and physics changed since TS (ISO; `Z`/offset allowed); `summary` stays complete |
+| `--with-physics` | per-node physics from the stored `pdrstruct<node>.hdf5[.gz]` (needs h5py; skipped and reported otherwise) |
+| `--struct-dir DIR` | where those files are (default `<model_path>/pdrgrid` from the database, if it exists locally) |
+| `--physics-cache FILE` | cache keyed by (path, size, mtime); default `~/.cache/pdr_run/status_physics.json` |
+| `--physics-budget S` | stop opening new HDF5 files after S seconds (default 20); the next call continues |
+| `--with-local` | process/TEXTOUT progress of running jobs, load, memory, disk (Linux, optional) |
+| `--out FILE` | write there (atomically) instead of stdout |
+
+Node state is the latest non-`skipped` job row of the node (the `--rerun` rule); a node
+with only skipped rows keeps its skipped row. Classes: `ok` (finished, skipped), `warn`
+(finished_relaxed, flagged, or a post-processing error), `bad` (not_converged, aborted,
+timeout, failed_storage, ...), `run`, `pending`. Axes are read from the parameter columns
+(log10 of `xnsur`, `mass`, `sint`; `zmetal` only if it varies) and each node carries its
+index into the axis values. `eta_inputs` holds the run-time samples (timeouts censored at
+the cap), the queue and the worker count for the dashboard's own ETA; `summary.eta` is a
+naive median/quantile estimate. Physics quantities per finished node (`q`):
+`log_Tsurf`, `log_Tdeep` (gas T of the first/last filled zone), `log_H2IR_tot` (sum of
+column 5 of `Spectrum IR small`), `op_col` (column o/p of H2), `AV_HH2` (A_V where
+2n(H2)/(n(H)+2n(H2)) first reaches 0.5); an unavailable quantity is `null`. Dataset paths
+and rules: docstring of `pdr_run/cli/status_physics.py`.
+
+Schema: `pdr_run/schemas/status_v1.schema.json` (`"schema": "pdr_run.status/1"`, JSON Schema
+draft 7; the tests validate every payload against it). Size (compact JSON, 30 % finished-type
+mixture): 392 nodes about 130 KB (16 KB gzipped), 2535 nodes about 720 KB (78 KB gzipped);
+a 30-minute delta is typically 10 to 60 KB.
+
+Example (abridged; `nodes`, `events` and `physics` shortened):
+
+```json
+{"schema":"pdr_run.status/1","generated_at":"2026-10-01T13:58:26Z",
+ "collector":{"version":"pdr_run 0.1.0+gabc1234","host":"halley","elapsed_s":0.03,"utc_offset_s":7200},
+ "grid":{"id":"grid1","database":"pdr_grid1","model_name":"grid1_tier0","tier":"t0",
+   "axes":[{"key":"n","param":"xnsur","label":"n_s","unit":"cm^-3","log":true,"values":[2.0,3.0,4.0]},
+           {"key":"M","param":"mass","label":"M","unit":"Msun","log":true,"values":[0.0]},
+           {"key":"chi","param":"sint","label":"chi","unit":"Draine","log":true,"values":[4.0]}],
+   "facet_axis":"M","max_walltime_s":14400,"workers":6},
+ "summary":{"total":3,"by_status":{"finished":1,"pending":1,"running":1},
+   "by_class":{"ok":1,"warn":0,"bad":0,"run":1,"pending":1},"core_hours":3.0,
+   "eta":{"p10":null,"p50":null,"p90":null,"model":"median-quantile-naive","n_fit":1}},
+ "delta":false,
+ "nodes":[{"id":"100_20_0_40_00","idx":[0,0,0],"job_id":1,"status":"finished","class":"ok","reruns":0,
+           "t_start":"2026-10-01T10:58:26","t_finish":"2026-10-01T13:58:26","exec_s":10800.0,
+           "converged":true,"global_it":7,"eps":0.002,"tsearch_flagged":0,"chem_relaxed":0}],
+ "running":[{"job_id":2,"node":"100_30_0_40_00","elapsed_s":3601,"cap_s":14400,"frac_cap":0.25}],
+ "eta_inputs":{"axes":["n","M","chi"],"samples":[{"idx":[0,0,0],"exec_s":10800.0,"censored":false}],
+               "queue":[[2,0,0]],"workers":6,"cap_s":14400},
+ "events":[{"t":"2026-10-01T13:58:26","kind":"job_finished","node":"100_20_0_40_00","sev":"info",
+            "text":"job 1 finished, 3.00 h, 7 it"}],
+ "storage":{"struct_dir_local":true,"stored_nodes":1,"backlog_nodes":0,"failed_storage":0},
+ "urgent":[],
+ "physics":[{"node":"100_20_0_40_00","job_id":1,
+             "q":{"log_Tsurf":2.9013,"log_Tdeep":1.8237,"log_H2IR_tot":-1.9183,"op_col":1.0508,"AV_HH2":0.6694},
+             "flags":{"zones":179,"AV_HH2":"ok","molfrac_source":"densities"}}],
+ "physics_meta":{"h5py":true,"computed":1,"cached":0,"no_file":0,"failed":0,"deferred":0}}
+```
+
+Times are the naive local time of the collector host (`collector.utc_offset_s`), as stored by
+pdr_run; only `generated_at` is UTC.
 
 ## Querying the configuration of a job
 

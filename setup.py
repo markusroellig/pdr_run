@@ -4,6 +4,7 @@ setup(
     name="pdr_run",  # Keep this as is
     version="0.1.0",
     packages=find_packages(exclude=['sandbox', 'sandbox.*']),  # Explicitly include packages
+    package_data={'pdr_run': ['schemas/*.json']},
     install_requires=[
         "sqlalchemy",
         "mysql-connector-python",
@@ -19,7 +20,10 @@ setup(
         "psycopg2-binary",  # PostgreSQL support if needed
     ],
     extras_require={
+        'physics': ['h5py', 'numpy'],
         'test': [
+            'jsonschema',
+
             'pytest',
             'pytest-cov',
             'pytest-mock',
@@ -27,7 +31,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'pdr_run=pdr_run.cli.runner:main',  # Add a command-line entry point
+            'pdr_run=pdr_run.cli.entry:main',  # Add a command-line entry point
         ],
     },
     author="PDR Framework Developers",

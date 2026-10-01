@@ -48,6 +48,7 @@ Parameters:
     --check: Preflight check of files, storage, database and post-processing;
              concise PASS/WARN/FAIL report, exit code 1 if anything FAILs
     --check-json: Same, as JSON (see pdr_run/cli/preflight.py)
+    status [--json ...]: read-only grid status snapshot (see pdr_run/cli/status.py)
 
 Environment Variables:
     PDR_STORAGE_TYPE: Storage backend type
@@ -428,6 +429,12 @@ def print_configuration(params, model_name, config, parallel=False, n_workers=No
 
 def main():
     """Main entry point for the PDR run CLI."""
+    # Read-only status snapshot: ``pdr_run status ...`` (own parser, no run set-up,
+    # nothing logged to the run log; see cli/status.py).
+    if len(sys.argv) > 1 and sys.argv[1] == 'status':
+        from pdr_run.cli.status import main as status_main
+        sys.exit(status_main(sys.argv[2:]))
+
     # Preflight check: parse first and dispatch before anything is logged,
     # so that the report is not mixed with start-up log lines.
     args = parse_arguments()
