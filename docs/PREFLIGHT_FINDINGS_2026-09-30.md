@@ -37,6 +37,9 @@ Found by reading the code; all four confirmed and fixed (see README "Run Status 
 - [x] **C. The exit code ignored failed nodes.** Now 0 = all jobs in a success state, 1 = some failed,
   2 = run-level error, plus a one-line summary.
 - [x] **D. No CLI way to recompute stored nodes.** New `--rerun STATE[,STATE...]`.
+- [x] **E. Large chemistry outputs.** `storage.compress_files` (whole-file gzip, level 6, streamed) stores
+  matching files as `<name>.gz`; recommendation for grid 1: `["pdrchem*.hdf5", "chemchk*.out"]`. The preflight
+  check `run.compression` shows the setting. See README, "Whole-file compression of stored results".
 
 ## Not verifiable without the production host (halley)
 

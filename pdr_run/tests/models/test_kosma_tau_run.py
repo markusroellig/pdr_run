@@ -652,3 +652,33 @@ class TestRerun:
         assert sel('finished', ('all',)) and sel(None, ('all',))
         assert not sel(None, ('failed',)) and not sel('aborted', ('not_converged',))
         assert not sel('aborted', None)
+
+
+class TestSkipStoredGz:
+    """A node stored whole-file compressed (pdrstruct...hdf5.gz) counts as stored."""
+
+    @pytest.fixture
+    def gz_node(self, orchestration_mocks, monkeypatch, tmp_path, make_job, db_session):
+        from pdr_run.storage.local import LocalStorage
+        storage = LocalStorage(str(tmp_path))
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend',
+                            lambda config=None: storage)
+        job = make_job(status='finished')
+        job.model_name.model_path = str(tmp_path / 'm')
+        db_session.commit()
+        grid = tmp_path / 'm' / 'pdrgrid'
+        grid.mkdir(parents=True)
+        (grid / 'pdrstructj001.hdf5.gz').write_bytes(b'x')
+        return job.id, orchestration_mocks
+
+    def test_skip_existing_detects_gz(self, gz_node, db_session):
+        job_id, order = gz_node
+        kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={})
+        assert 'run_pdr' not in order
+        assert _reload(db_session, job_id).status == 'skipped'
+
+    def test_rerun_all_recomputes_gz_node(self, gz_node):
+        job_id, order = gz_node
+        with patch.object(kosma_tau, 'run_pdr', side_effect=_pdr_sets_status(order, 'finished')):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={}, rerun=('all',))
+        assert 'run_pdr' in order and 'copy_pdroutput' in order

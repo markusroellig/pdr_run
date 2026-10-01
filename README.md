@@ -786,6 +786,37 @@ Files are replaced safely: SFTP uploads to `<name>.part` and renames it over the
 local backend copies to `<name>.part` and uses `os.replace`; an interrupted transfer leaves an existing file
 intact (rclone `copyto` already writes to a temporary name). A leftover `.part` file is removed on failure.
 
+### Whole-file compression of stored results
+
+`storage.compress_files` is a list of `fnmatch` patterns (default `[]` = nothing is compressed, behaviour
+unchanged). A result file whose **stored name** (e.g. `pdrchem<model>.hdf5`, `chemchk<model>.out`) or whose
+**local name** (`pdrchem_c.hdf5`, `chemchk.out`) matches a pattern is stored as `<name>.gz`:
+
+```yaml
+storage:
+  compress_files: ["pdrchem*.hdf5", "chemchk*.out"]   # recommended for grid 1
+```
+
+- Measured on a (5,0,0) node: `pdrchem_c.hdf5` 65 MB -> 21 MB, `chemchk.out` 29 MB -> 3 MB. Per-dataset HDF5
+  compression does not help (the size is per-object overhead of 1000 small datasets).
+- The file is compressed by streaming (gzip level 6, no file name or time in the header, so the same input
+  gives the same bytes) into a temporary `<local file>.gz` next to the local output, uploaded with the normal
+  atomic `.part` logic and retries, and removed afterwards, also on failure. A compression error counts like
+  a storage failure (`failed_storage`).
+- The database refers to what is stored: `HDFFile.file_name_hdf5_c`, `full_path_hdf5_c` and
+  `PDRModelJob.output_hdf5_chem_file` / `output_chemchk_file` carry the `.gz` name, `sha256_sum_hdf5_c` and
+  `file_size_hdf5_c` are checksum and size of the `.gz`. The uncompressed size is only logged
+  (`Compressed ...: N -> M bytes`), there is no column for it.
+- `pdrstruct<model>.hdf5` is never compressed (compressed internally, read directly by downstream tools),
+  even if a pattern matches it. TEXTOUT, CTRL_IND and the other files are compressed only if matched.
+- Skip-existing and `--rerun` look for `pdrstruct<model>.hdf5` and accept `pdrstruct<model>.hdf5.gz`; the
+  skip path registers `.gz` names if only those are stored. `kosma_tau.retrieve_decompressed()` fetches a
+  stored file uncompressed whether it is stored plain or as `.gz` (used for the SIMLINE input).
+- Switching the setting for an already stored node: a new store writes the other variant next to the old one
+  (`pdr_run` has no delete operation); remove the old file by hand. Read the `.gz` with `gunzip -k`, `zcat` or
+  `h5py.File(io.BytesIO(gzip.open(f).read()))`.
+- `pdr_run --check` shows the setting in the line `run.compression`.
+
 ### Placeholder checksums
 
 If a node's `pdrstruct<model>.hdf5` already exists in storage, the PDR step is skipped (status `skipped`)
@@ -950,6 +981,7 @@ database:
 storage:
   type: local
   base_dir: /data/pdr/models  # results: <base_dir>/<model_name>/pdrgrid, oniongrid, simlinegrid
+  compress_files: ["pdrchem*.hdf5", "chemchk*.out"]   # stored as .gz, ~3x (HDF5) / ~10x (ASCII) smaller
 
 pdr:
   model_name: grid1_tier0

@@ -573,6 +573,95 @@ def _store(storage, local_path, remote_path):
         return False
 
 
+GZIP_LEVEL = 6
+GZ_SUFFIX = '.gz'
+
+
+def compress_patterns(config):
+    """The ``storage.compress_files`` list of *config* (default: empty = no
+    compression). A bare string is accepted as a one-element list."""
+    pats = ((config or {}).get('storage') or {}).get('compress_files') or []
+    return [pats] if isinstance(pats, str) else list(pats)
+
+
+def should_compress(patterns, *names):
+    """True if any of *names* (stored name, local file name) matches one of
+    the fnmatch *patterns*. Files that are already ``.gz`` are never
+    compressed again, and the pdrstruct file is never compressed (it is
+    compressed internally and read directly by downstream tools)."""
+    import fnmatch
+    names = [n for n in names if n]
+    if not names or names[0].endswith(GZ_SUFFIX) or names[0].startswith('pdrstruct'):
+        return False
+    return any(fnmatch.fnmatchcase(n, pat) for pat in patterns for n in names)
+
+
+def gzip_file(src, dst, level=GZIP_LEVEL):
+    """Stream *src* into the gzip file *dst* (never loads the file into
+    memory). The header carries neither name nor time, so the same input
+    always gives the same bytes (stable checksum). *dst* is removed if the
+    compression fails."""
+    import gzip
+    try:
+        with open(src, 'rb') as fin, open(dst, 'wb') as raw, \
+                gzip.GzipFile(filename='', mode='wb', compresslevel=level,
+                              fileobj=raw, mtime=0) as fout:
+            shutil.copyfileobj(fin, fout, 1024 * 1024)
+    except BaseException:
+        if os.path.exists(dst):
+            os.remove(dst)
+        raise
+
+
+def gunzip_file(src, dst):
+    """Stream the gzip file *src* into *dst*; *dst* is removed on failure."""
+    import gzip
+    try:
+        with gzip.open(src, 'rb') as fin, open(dst, 'wb') as fout:
+            shutil.copyfileobj(fin, fout, 1024 * 1024)
+    except BaseException:
+        if os.path.exists(dst):
+            os.remove(dst)
+        raise
+
+
+def _storage_has(storage, path):
+    """Existence check through the backend (file_exists, else list_files)."""
+    if hasattr(storage, 'file_exists'):
+        return bool(storage.file_exists(path))
+    try:
+        return os.path.basename(path) in storage.list_files(os.path.dirname(path))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resolve_stored_name(storage, path):
+    """Path under which *path* is actually stored: *path* itself, else
+    ``path + '.gz'`` (whole-file compression, ``storage.compress_files``),
+    else None."""
+    if _storage_has(storage, path):
+        return path
+    if _storage_has(storage, path + GZ_SUFFIX):
+        return path + GZ_SUFFIX
+    return None
+
+
+def retrieve_decompressed(storage, remote_path, local_path):
+    """Fetch *remote_path* into *local_path* as an uncompressed file, also
+    when it is stored as ``remote_path + '.gz'``."""
+    if remote_path.endswith(GZ_SUFFIX) or _storage_has(storage, remote_path) \
+            or not _storage_has(storage, remote_path + GZ_SUFFIX):
+        storage.retrieve_file(remote_path, local_path)
+        return
+    tmp_gz = local_path + '.gz.part'
+    try:
+        storage.retrieve_file(remote_path + GZ_SUFFIX, tmp_gz)
+        gunzip_file(tmp_gz, local_path)
+    finally:
+        if os.path.exists(tmp_gz):
+            os.remove(tmp_gz)
+
+
 def _mark_failed_storage(job_id, session, what):
     """Give the job the terminal status 'failed_storage' (results could not
     be stored after all retries). Nothing later in run_kosma_tau overwrites
@@ -781,12 +870,46 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
         failures = []
         pdrgrid = os.path.join(model_path, 'pdrgrid')
 
+        patterns = compress_patterns(config)
+        uploaded = {}   # remote_name -> what is actually stored (compressed files only)
+
         def _put(local_source, remote_name, attr=None, label=None):
-            remote_dest = os.path.join(pdrgrid, remote_name)
-            if _store(storage, local_source, remote_dest):
+            """Store one file, as <remote_name>.gz if it matches
+            storage.compress_files. The temporary .gz is always removed."""
+            gz_tmp = None
+            try:
+                upload_path, stored_name = local_source, remote_name
+                if should_compress(patterns, remote_name, os.path.basename(local_source)):
+                    gz_tmp = local_source + GZ_SUFFIX
+                    stored_name = remote_name + GZ_SUFFIX
+                    try:
+                        gzip_file(local_source, gz_tmp)
+                    except OSError as exc:
+                        logger.error(f"Compressing {local_source} failed: {exc}")
+                        gz_tmp = None
+                        failures.append(remote_name)
+                        return False
+                    upload_path = gz_tmp
+                remote_dest = os.path.join(pdrgrid, stored_name)
+                ok = _store(storage, upload_path, remote_dest)
+                if ok and gz_tmp:
+                    uploaded[remote_name] = {
+                        'name': stored_name,
+                        'sha256': get_digest(gz_tmp),
+                        'size': os.path.getsize(gz_tmp),
+                        'size_uncompressed': os.path.getsize(local_source),
+                        'mtime': os.path.getmtime(local_source),
+                    }
+                    logger.info(f"Compressed {remote_name}: "
+                                f"{uploaded[remote_name]['size_uncompressed']} -> "
+                                f"{uploaded[remote_name]['size']} bytes (gzip {GZIP_LEVEL})")
+            finally:
+                if gz_tmp and os.path.exists(gz_tmp):
+                    os.remove(gz_tmp)
+            if ok:
                 if attr:
                     setattr(job, attr, remote_dest)
-                logger.info(f"Successfully stored {label or remote_name} for job {job_id}")
+                logger.info(f"Successfully stored {label or stored_name} for job {job_id}")
                 return True
             failures.append(remote_name)
             return False
@@ -882,13 +1005,22 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
             logger.error(f"Cannot find local HDF5 file: {local_hdf5_path}")
             return
 
-        if os.path.exists(local_hdf5_chem_path):
+        chem_stored = uploaded.get(hdf5_chem_out_name)
+        if chem_stored:
+            # stored as .gz: checksum, size and time describe the stored file
+            hdf5_chem_out_name = chem_stored['name']
+            sha_key_hdf5_c = chem_stored['sha256']
+            local_hdf5_chem_mtime = chem_stored['mtime']
+            local_hdf5_chem_size = chem_stored['size']
+        elif os.path.exists(local_hdf5_chem_path):
             sha_key_hdf5_c = get_digest(local_hdf5_chem_path)
             local_hdf5_chem_mtime = os.path.getmtime(local_hdf5_chem_path)
             local_hdf5_chem_size = os.path.getsize(local_hdf5_chem_path)
         else:
             logger.error(f"Cannot find local HDF5 chemistry file: {local_hdf5_chem_path}")
             return
+
+        chemchk_out_name = uploaded.get(chemchk_out_name, {}).get('name', chemchk_out_name)
 
         # Use _session.query().filter_by().first() instead of _session.query().get() for complex queries
         instance = _session.query(HDFFile).filter_by(sha256_sum=sha_key).first()
@@ -1206,7 +1338,7 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         else:
             remote_struct = os.path.join(model_path, 'pdrgrid', f'pdrstruct{model}.hdf5')
             logger.info(f"run_simline: fetching {remote_struct} from storage")
-            storage.retrieve_file(remote_struct, workfile)
+            retrieve_decompressed(storage, remote_struct, workfile)
 
         # --- per-job pipeline config: base config with an absolute simline_dir
         base_cfg_path = simline_cfg.get('config_file') or os.path.join(
@@ -1445,22 +1577,10 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
         # Check if model already exists using storage backend
         hdf_storage_path = os.path.join(job.model_name.model_path, 'pdrgrid', hdf5_out_name)
         
-        # Use storage backend to check file existence
+        # Use storage backend to check file existence (also a stored .gz)
         try:
-            if hasattr(storage, 'file_exists'):
-                # If storage backend has a file_exists method, use it
-                model_exists = storage.file_exists(hdf_storage_path)
-            else:
-                # Fallback: try to get file info (this will raise an exception if file doesn't exist)
-                try:
-                    # This is a simple check - try to list the directory and see if our file is there
-                    parent_dir = os.path.dirname(hdf_storage_path)
-                    files = storage.list_files(parent_dir)
-                    model_exists = os.path.basename(hdf_storage_path) in files
-                except:
-                    # If we can't list files or any other error, assume file doesn't exist
-                    model_exists = False
-                    
+            model_exists = resolve_stored_name(storage, hdf_storage_path) is not None
+
             logger.debug(f"Checking for existing model at: {hdf_storage_path}")
             logger.debug(f"Model exists: {model_exists}")
             
@@ -1481,7 +1601,7 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
             logger.warning(f"Model {model} exists remotely, skipping PDR execution")
             
             # Update database entries
-            update_db_pdr_output_entries(job_id, _session) # Pass session
+            update_db_pdr_output_entries(job_id, _session, config=config) # Pass session
     
             job = _session.get(PDRModelJob, job_id)
             
@@ -1656,7 +1776,7 @@ def _placeholder_file_stat(full_path):
     return 0, True
 
 
-def update_db_pdr_output_entries(job_id, session):
+def update_db_pdr_output_entries(job_id, session, config=None):
     """Update database entries for PDR output files when skipping execution.
 
     This function is called when a model already exists remotely and we're
@@ -1671,6 +1791,7 @@ def update_db_pdr_output_entries(job_id, session):
     Args:
         job_id (int): Job ID
         session: Database session
+        config (dict, optional): configuration (selects the storage backend)
     """
     from pdr_run.storage.base import get_storage_backend
     
@@ -1701,6 +1822,17 @@ def update_db_pdr_output_entries(job_id, session):
         pdrnew_inp_file_name = f'PDRNEW{model}.INP'
         json_file_name = f'pdr_config{model}.json'
         ctrl_ind_file_name = f'CTRL_IND' + model
+
+        # Files stored whole-file compressed (storage.compress_files) have
+        # the name <name>.gz; register what is actually stored.
+        _storage = get_storage_backend(config)
+        pdrgrid_dir = os.path.join(model_path, 'pdrgrid')
+        hdf5_chem_out_name = os.path.basename(
+            resolve_stored_name(_storage, os.path.join(pdrgrid_dir, hdf5_chem_out_name))
+            or hdf5_chem_out_name)
+        chemchk_out_name = os.path.basename(
+            resolve_stored_name(_storage, os.path.join(pdrgrid_dir, chemchk_out_name))
+            or chemchk_out_name)
         
         logger.info(f"Creating database entries for existing remote model {model}")
         

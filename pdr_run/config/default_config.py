@@ -97,6 +97,7 @@ STORAGE_CONFIG = {
     'password': None,               # For SFTP/FTP
     'use_local_copy': True,         # Keep local copy when using remote storage
     'remote_path_prefix': None,     # Optional prefix to strip from remote paths (rclone)
+    'compress_files': [],           # fnmatch patterns of stored files to gzip whole-file (stored as <name>.gz); [] = none
 }
 
 # PDR model configuration

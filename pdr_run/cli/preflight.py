@@ -1183,6 +1183,17 @@ def check_walltime(ctx: Ctx):
     return PASS, f"max_walltime_s={wt:g} s ({wt / 3600:.1f} h); stale threshold {1.5 * wt / 3600:.1f} h"
 
 
+def check_compression(ctx: Ctx):
+    """One line: which stored files are gzip-compressed (storage.compress_files)."""
+    pats = (ctx.eff.get('storage') or {}).get('compress_files') or []
+    if isinstance(pats, str):
+        pats = [pats]
+    if not pats:
+        return PASS, "storage.compress_files: none (results stored uncompressed)"
+    return PASS, ("storage.compress_files: " + ", ".join(pats)
+                  + " -> stored as <name>.gz (gzip level 6); pdrstruct is never compressed")
+
+
 def check_workers(ctx: Ctx):
     import multiprocessing
     from pdr_run.core.engine import _calculate_cpu_count
@@ -1274,6 +1285,7 @@ CHECKS: List[Tuple[str, Callable[[Ctx], Tuple[str, str]]]] = [
     ('post.uv_continuum', check_uvcont),
     ('post.simline', check_simline),
     ('run.walltime', check_walltime),
+    ('run.compression', check_compression),
     ('run.workers', check_workers),
 ]
 
