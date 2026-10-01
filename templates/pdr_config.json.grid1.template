@@ -1,6 +1,6 @@
 {
   "config_comment": "KOSMA-tau GRID 1 template (frozen 2026-10-01). Network chem_rates_grid1_2026-10.dat, 172 species, abundances of GRID1_ELEMENT_ABUNDANCES_PROPOSAL_2026-09-30. Every grid-1 decision of 30 Sept / 1 Oct (D2, D7, D9, D10, D12, D13, D15, D19, ER, F, F2, CS, clamp, B4, U-1, zeta) is set explicitly, also where the code default equals it; the other keys new on grid1/integration are pinned at their code defaults. Built by reports/scripts/make_grid1_template.py from rundir/pdr_config.json.g1c_off_iso1001_ab1001; binary: grid1/integration build (pdrexe_grid1_<hash>_prec_halley). Revised 2026-10-01 afternoon: U-1 on (heating.cr_heating_per_ionisation 1).",
-  "config_comment_comment": "Node values (surface_density, cloud_radius, radiation_field_strength, metallicity) are set by the driver (run_node_parallel.sh) or by pdr_run (KT_VAR placeholders in templates/pdr_config.json.grid1.template); nothing else differs between nodes.",
+  "config_comment_comment": "Node values (surface_density, cloud_radius, radiation_field_strength, metallicity) are set by the driver (run_node_parallel.sh) or by pdr_run (the four placeholders of this template); nothing else differs between nodes.",
   "physical_params": {
     "surface_density": KT_VARxnsur_,
     "surface_density_comment": "Total H particle density at cloud surface (in cm^-3): XNSUR",
