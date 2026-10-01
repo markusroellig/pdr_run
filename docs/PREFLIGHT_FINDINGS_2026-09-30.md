@@ -38,14 +38,45 @@ Found by reading the code; all four confirmed and fixed (see README "Run Status 
   2 = run-level error, plus a one-line summary.
 - [x] **D. No CLI way to recompute stored nodes.** New `--rerun STATE[,STATE...]`.
 - [x] **E. Large chemistry outputs.** `storage.compress_files` (whole-file gzip, level 6, streamed) stores
-  matching files as `<name>.gz`; recommendation for grid 1: `["pdrchem*.hdf5", "chemchk*.out"]`. The preflight
+  matching files as `<name>.gz`; recommendation for grid 1: `["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]`. The preflight
   check `run.compression` shows the setting. See README, "Whole-file compression of stored results".
+
+## rclone / S3 write path review (2026-10-01, run on halley against the real server)
+
+Trigger: a co-author reported reproducible trouble overwriting objects and writing > 1 GB (mainly TEXTOUT) on the
+target S3 server; maintainer asked for a review of the rclone path. Findings (file `pdr_run/storage/remote.py`
+unless named otherwise; line numbers of the pre-review version 53abbc9):
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | high | `store_file` (l. 455-486) ran `rclone mkdir <remote>:<dir>` before every upload. On a bucket root this tries to create the bucket and hangs until the client timeout (reproduced); inside a bucket it is a no-op. | No mkdir on object stores; `--s3-no-check-bucket`; non-S3 remotes keep mkdir with a timeout. |
+| 2 | high | No timeout anywhere (`subprocess.run` without `timeout`, no `--contimeout/--timeout`): one hung call blocks a worker forever. | Connect/idle timeouts + hard subprocess timeout (120 s metadata, 300 s + size/1 MB/s transfer); a timeout is retried. |
+| 3 | high | Overwrite relied on `copyto` semantics. rclone skips or only touches the modification time (server-side copy) when size/hash match, and a failed overwrite leaves no defined state. README claimed "rclone copyto already writes to a temporary name" (not true for S3). | Delete the old object explicitly, upload to the final key, verify (see README "RClone storage on S3"). |
+| 4 | high | No verification after upload; a truncated or wrong object was reported as stored. | `lsjson --hash`: size always, MD5 if reported (also reported for multipart objects here); mismatch is retried. |
+| 5 | medium | Large files: default 5 MB chunks (10 000-part limit hit at 50 GB), cutoff/concurrency not controlled, rclone's own `--retries 3` re-uploads the whole file inside one call (and multiplies with ours). | Chunk 64 MB (auto-raised to stay below 9000 parts), cutoff 256 MB, concurrency 4, `--retries 1`. |
+| 6 | high | `file_exists` (l. 587-628) treated every non-zero exit that was not a transport marker as "absent" (credentials, 403 and server errors included): a stored multi-hour node would be recomputed. `lsf` rc 3 was not recognised as the normal answer. | rc 3/4 or "not found" = absent; everything else retried, then ERROR + False. |
+| 7 | medium | `_get_full_remote_path` (l. 423-444): prefix stripping by plain `startswith` (`/a/b` also stripped `/a/bc/x`); `os.path.join` could keep `//`; `remote:/key` leading slash on object stores. | Component-wise prefix removal, normalised keys, no leading `/` on object stores, `..` refused, 1024-byte key limit. |
+| 8 | medium | Errors were not classified: permanent failures (`AccessDenied`, `NoSuchBucket`) were retried 4 times; `NoSuchBucket` had no useful message. | `_RClonePermanentError` (not retried), "bucket does not exist (ask an admin)". |
+| 9 | medium | `retrieve_file` had no size check or timeout. | Timeout scaled with the remote size, size comparison. |
+| 10 | medium | `copy_onionoutput` and `run_simline` (`kosma_tau.py`) used `_store`, so `compress_files` never applied to the ONION/SIMLINE TEXTOUT and ASCII outputs. | `_store_maybe_gz` in both. |
+| 11 | low | `output_textout_file` in the database lost the `.gz` suffix (copy path l. ~1138 and skip path l. ~1985). | Names resolved like chem/chemchk. |
+| 12 | medium | `--check` storage probe (`cli/preflight.py`) created a probe object next to a bucket-less remote path (bucket creation attempt) and never tested overwrite. | Probe runs the real `store_file/retrieve_file/delete_file` in the prefix, lists buckets with `lsd`, reports a missing bucket, does not probe a remote without bucket. |
+
+Measured on halley (rclone 1.53.3, 2026-10-01, prefix `noices/_pdrrun_probe_20261001/`, removed afterwards): small
+object 0.8 s, overwrite 1.0 s, gz TEXTOUT-like file (22 MB -> 1.0 MB) 0.8 s, 1.5 GB random file 155 s with MD5
+verification, its overwrite 146 s, download 139 s (about 10 MB/s, peak RSS 322 MB), `file_exists` 0.2-0.4 s,
+preflight probe 2.4 s. Compatibility note: rclone 1.50 (development machine) does not know `lsjson --no-mimetype`;
+the code uses only `--hash`.
+
+Open: no test against an ONION-sized (many small objects) run; throughput of 10 MB/s means a 1 GB uncompressed
+TEXTOUT costs about 100 s per node, which is the reason for `TEXTOUT*` in `compress_files`; incomplete
+multipart uploads after a killed worker are not cleaned by pdr_run (`rclone cleanup`).
 
 ## Not verifiable without the production host (halley)
 
 - Real MySQL server: server version, `max_connections`, privileges needed by `db.write_rollback`, InnoDB
   rollback behaviour, connect latency. Only the failure path (closed port) was exercised.
-- Real SFTP / rclone remote: only the failure path (connection refused) was exercised.
+- Real SFTP remote: only the failure path (connection refused) was exercised. rclone/S3: exercised on halley, see above.
 - The ifx build's `pdrexe --version` string and its `-dirty` marker (matched case-insensitively).
 - A real `kosma_h2` checkout for the UV-continuum step (tested with a fake package).
 

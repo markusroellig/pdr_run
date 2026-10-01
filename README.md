@@ -321,6 +321,10 @@ storage:
   remote_path_prefix: /path/to/trim/from/remote/destination
 ```
 
+For an S3 server such as the Cologne one use `rclone_remote: kosmatau:<bucket>/<prefix>` (the bucket must
+already exist) and `compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]`; see
+[RClone storage on S3](#rclone-storage-on-s3).
+
 ## MySQL Setup
 
 ### Prerequisites
@@ -814,7 +818,7 @@ failure as an ERROR.
 | Backend | Retried operations | Retried errors |
 |---|---|---|
 | SFTP | `store_file`, `retrieve_file`, `list_files`, `file_exists` | `paramiko.SSHException`, socket errors and timeouts, `ConnectionError`, `OSError`, `EOFError`; **not** retried: `FileNotFoundError` and `paramiko.AuthenticationException` (permanent) |
-| rclone | `store_file` (mkdir + copyto), `retrieve_file`, `list_files`, `sync_directory`, `file_exists` | `SubprocessError`, `RuntimeError`, `OSError` |
+| rclone | `store_file` (S3: stat, delete, copyto, verify; other remotes: mkdir, copyto), `retrieve_file`, `list_files`, `sync_directory`, `file_exists` | `SubprocessError`, `RuntimeError`, `OSError` |
 
 For rclone `file_exists`, only a stderr that looks like a transport problem (`timeout`, `connection
 refused`, `no such host`, ...) is retried; an ordinary "path not found" is the normal answer for a node not
@@ -828,7 +832,8 @@ gets the status `failed_storage`, which is not overwritten later. The reason is 
 
 Files are replaced safely: SFTP uploads to `<name>.part` and renames it over the target (`posix_rename`), the
 local backend copies to `<name>.part` and uses `os.replace`; an interrupted transfer leaves an existing file
-intact (rclone `copyto` already writes to a temporary name). A leftover `.part` file is removed on failure.
+intact. rclone does not use a `.part` name: see "RClone storage on S3" below for how it replaces objects.
+A leftover `.part` file is removed on failure (SFTP, local).
 
 ### Whole-file compression of stored results
 
@@ -838,7 +843,7 @@ unchanged). A result file whose **stored name** (e.g. `pdrchem<model>.hdf5`, `ch
 
 ```yaml
 storage:
-  compress_files: ["pdrchem*.hdf5", "chemchk*.out"]   # recommended for grid 1
+  compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]   # recommended for grid 1
 ```
 
 - Measured on a (5,0,0) node: `pdrchem_c.hdf5` 65 MB -> 21 MB, `chemchk.out` 29 MB -> 3 MB. Per-dataset HDF5
@@ -853,6 +858,67 @@ storage:
   (`Compressed ...: N -> M bytes`), there is no column for it.
 - `pdrstruct<model>.hdf5` is never compressed (compressed internally, read directly by downstream tools),
   even if a pattern matches it. TEXTOUT, CTRL_IND and the other files are compressed only if matched.
+- **Use `TEXTOUT*` for remote storage.** The screen log is large ASCII (10-20x smaller as `.gz`, a 22 MB test log
+  gave 1.0 MB) and can reach > 1 GB for long runs; a co-author who wrote grids to the same S3 server had
+  reproducible trouble with exactly these large TEXTOUT objects. The pattern matches the PDR log
+  (`TEXTOUT<model>`), the ONION logs (`TEXTOUT<model>_<species>`) and the SIMLINE log
+  (`SIMLINE<model>.TEXTOUT_SIMLINE`). The default stays `[]` (explicit is better than a silent format change for
+  local runs); `pdr_run --check` shows a WARN for sftp/rclone storage when TEXTOUT is not covered.
+  `compress_files` applies to the ONION and SIMLINE outputs as well, not only to the PDR step.
+  The database column `output_textout_file` carries the `.gz` name.
+
+### RClone storage on S3
+
+Setup: `storage.type: rclone`, `rclone_remote: <remote>:<bucket>/<prefix>`, e.g.
+`kosmatau:noices/grid1-2026`. Everything below the remote's base path is the key prefix; the model's
+`model_path` is appended (`<base>/<model_path>/pdrgrid/<file>`). `base_dir` and `use_mount` are not used by the
+rclone backend (the files are not written through a mount). `remote_path_prefix` is removed from the start of
+`model_path` when it matches whole path components (`/home/u/runs` strips `/home/u/runs/m/x`, not
+`/home/u/runs2/m/x`); use it to avoid absolute local path components in the keys. Keys are normalised
+(no `//`, no leading `/` on object stores, `..` is refused), maximum 1024 bytes.
+
+- **No buckets are created.** pdr_run never runs `mkdir` on S3 remotes (directories are key prefixes), and
+  passes `--s3-no-check-bucket` so that a missing bucket gives a clear `NoSuchBucket` error ("ask an admin")
+  instead of an attempt to create it (on the Cologne server `rclone mkdir <bucket>` hangs until the client
+  timeout). The remote type is read from `rclone listremotes --long` (or `rclone_remote_type`, or the
+  `RCLONE_CONFIG_<NAME>_TYPE` variable). Non-S3 rclone remotes keep `mkdir` (bounded by a timeout).
+- **Overwriting an object.** S3 has no rename; an emulated rename is a server-side copy plus delete, which is
+  not atomic and fails for large objects or on servers with a fragile copy. Instead `store_file` looks at the
+  key (`lsjson`), deletes an existing object explicitly (`deletefile`), then uploads straight to the final key.
+  A (multipart) upload becomes visible only when it completes, so a half-finished upload never shows up as a
+  result. The window between delete and the end of the upload is covered by the status model: a failed store
+  gives `failed_storage` and the node is recomputed/re-stored by `--rerun`. Deleting first also avoids the
+  rclone rule "same size/hash, only the time differs: update the modification time with a server-side copy"
+  (seen on the server: 300 MB re-upload of identical content took 1.2 s as a metadata copy).
+- **Verification after every upload.** Size always, MD5 whenever the server reports one. On the Cologne server
+  `rclone lsjson --hash` returns the MD5 also for multipart objects (rclone stores it as object metadata), so
+  a 1.5 GB object is verified by checksum. A mismatch deletes and re-uploads (retry). Switch off with
+  `rclone_verify: false`.
+- **Large files.** Objects > `rclone_upload_cutoff_mb` (256) are uploaded in `rclone_chunk_size_mb` (64) chunks
+  with `rclone_upload_concurrency` (4) parallel parts, raised automatically so that a file never needs more than
+  9000 of the 10 000 allowed parts (limit about 560 GB at 64 MB). Memory per running upload is about
+  chunk x concurrency (measured: 322 MB peak RSS for a 1.5 GB file); with 6 workers uploading at the same time
+  budget about 2 GB. The 5 GB single-PUT limit is never reached (multipart above the cutoff).
+- **Timeouts.** Every rclone call has `--contimeout 30s --timeout 300s` (idle) and a hard subprocess timeout:
+  120 s for metadata calls, `300 s + size / rclone_min_rate_mb_s` (1 MB/s) for transfers. A hung call is killed
+  and retried (2 s, 4 s, 8 s backoff, `rclone_max_retries`); it can never block a worker forever. rclone's own
+  retries are set to 1 so that the pdr_run retry (which restarts delete + upload + verify) is the only one.
+  Permanent errors (`AccessDenied`, bad key, `NoSuchBucket`, exit status 7, key too long) are not retried.
+- **Existence checks** use one `lsf` per candidate name; `lsf` exits 0 with empty output for a missing file in an
+  existing directory and 3 ("directory not found") for a missing directory/bucket: both mean "absent". Any other
+  failure (timeout, credentials) is retried and then logged as an ERROR (treated as absent, as before).
+  The skip-existing test therefore costs one `lsf` (about 0.3 s) for a plain name and a second for `<name>.gz`.
+- **Measured on halley (rclone 1.53.3, 2026-10-01):** small object 0.8 s, overwrite 1.0 s, 1.5 GB random file
+  155 s upload with MD5 verification (about 10 MB/s), 146 s overwrite (delete + upload), 139 s download.
+  After an aborted multipart upload (killed process) the unfinished parts stay on the server until they are
+  aborted; ask the admin or run `rclone cleanup <remote>:<bucket>` (removes multipart uploads older than 24 h).
+- **Files per node:** about 8-12 objects per node (`pdrstruct`, `pdrchem`, `chemchk`, `TEXTOUT`,
+  `pdr_config`, `PDRNEW`, `CTRL_IND`, optional `pdr<model>.hdf` and `MCDRT`); ONION adds 7 per species and
+  SIMLINE one object per output file. Each is a separate `copyto` (about 1 s on this server); at about
+  230 nodes this is a few minutes in total, no bundling is done.
+- `pdr_run --check` probes the real code path (write, overwrite, read back, compare, delete) with a probe object
+  in the configured prefix, and reports "bucket missing; ask an admin" if the bucket is not listed by
+  `rclone lsd <remote>:`. For a remote without bucket in `rclone_remote` it only warns.
 - Skip-existing and `--rerun` look for `pdrstruct<model>.hdf5` and accept `pdrstruct<model>.hdf5.gz`; the
   skip path registers `.gz` names if only those are stored. `kosma_tau.retrieve_decompressed()` fetches a
   stored file uncompressed whether it is stored plain or as `.gz` (used for the SIMLINE input).
@@ -1025,7 +1091,7 @@ database:
 storage:
   type: local
   base_dir: /data/pdr/models  # results: <base_dir>/<model_name>/pdrgrid, oniongrid, simlinegrid
-  compress_files: ["pdrchem*.hdf5", "chemchk*.out"]   # stored as .gz, ~3x (HDF5) / ~10x (ASCII) smaller
+  compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]   # stored as .gz, ~3x (HDF5) / ~10-20x (ASCII) smaller
 
 pdr:
   model_name: grid1_tier0
