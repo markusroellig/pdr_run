@@ -1,7 +1,7 @@
 """SQLAlchemy models for the PDR framework."""
 
 import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Interval
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Interval, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -259,6 +259,12 @@ class PDRModelJob(Base):
     # Failure of a post-processing step (ONION / SIMLINE) after a usable
     # model; the model's own status is NOT changed by it. NULL = none.
     postproc_error = Column(Text, nullable=True)
+
+    # Full-config provenance: the pdr_config.json the job ran with (rendered
+    # template, parsed to a normalized JSON object; NULL if it did not parse)
+    # and the sha256 of the template file it was rendered from.
+    config_json = Column(JSON(none_as_null=True), nullable=True)
+    template_sha256 = Column(String(64), nullable=True)
 
 
     # Relationships

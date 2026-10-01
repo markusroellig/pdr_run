@@ -111,6 +111,7 @@ class Ctx:
     db_type: Optional[str] = None
     db_max_connections: Optional[int] = None
     disk_paths: Dict[str, str] = field(default_factory=dict)  # label -> path
+    template_path: Optional[str] = None    # JSON template found by tpl.json
 
     def scrub(self, text: str) -> str:
         for s in sorted(set(self.secrets), key=len, reverse=True):
@@ -639,6 +640,7 @@ def check_template_json(ctx: Ctx):
         except json.JSONDecodeError:
             _fail(f"{path}: not parseable after substitution (comments allowed): "
                   f"line {exc.lineno} col {exc.colno}: {exc.msg}")
+    ctx.template_path = path
     detail = f"{path} (placeholders substituted, {len(parsed)} sections, comments allowed)"
     if note:
         return WARN, detail + '; ' + note
@@ -646,6 +648,16 @@ def check_template_json(ctx: Ctx):
         # The shipped templates have one (near line 21); json-fortran skips stray commas.
         detail += f"; trailing comma near line {trailing} (json-fortran tolerates it)"
     return PASS, detail
+
+
+def check_config_provenance(ctx: Ctx):
+    import hashlib
+    if not ctx.template_path:
+        _skip("template check did not run or failed")
+    with open(ctx.template_path, 'rb') as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    return PASS, (f"each job stores its rendered pdr_config.json (pdr_model_jobs.config_json) "
+                  f"and template sha256 {digest}")
 
 
 def _data_file_check(ctx: Ctx, fname: str, required: bool = True):
@@ -1005,7 +1017,7 @@ def check_db_additive(ctx: Ctx):
         _fail(f"{len(missing)}/{total} additive column(s) missing on pdr_model_jobs: "
               f"{', '.join(missing[:4])}{'...' if len(missing) > 4 else ''} - a normal run "
               "adds them (ensure_additive_columns); --check does not")
-    return PASS, f"{total}/{total} additive run-status/uvcont columns present"
+    return PASS, f"{total}/{total} additive run-status/uvcont/config-provenance columns present"
 
 
 def check_db_rows(ctx: Ctx):
@@ -1268,6 +1280,7 @@ CHECKS: List[Tuple[str, Callable[[Ctx], Tuple[str, str]]]] = [
     ('kt.pdr_version', check_pdr_version),
     ('kt.input_dirs', check_input_dirs),
     ('tpl.json', check_template_json),
+    ('tpl.provenance', check_config_provenance),
     ('tpl.chem_network', check_chem_db),
     ('tpl.binding_energies', check_binding_energies),
     ('tpl.fuv_file', check_fuv),

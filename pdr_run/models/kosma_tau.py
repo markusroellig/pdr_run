@@ -150,14 +150,14 @@ def transform(multilevelDict):
     return {'KT_VAR'+str(key)+'_' : (transform(value) if isinstance(value, dict) else value) 
             for key, value in multilevelDict.items()}
 
-def open_template(template_name):
-    """Open a template file and return its contents.
+def locate_template(template_name):
+    """Find a template file and return its path.
     
     Args:
         template_name (str): Name or path of the template file
         
     Returns:
-        String containing the template content
+        Path of the first match in '.' then PDR_INP_DIRS
         
     Raises:
         FileNotFoundError: If the template file cannot be located
@@ -182,15 +182,58 @@ def open_template(template_name):
         
         if os.path.exists(template_path):
             logger.info(f"Template found at: {template_path}")
-            with open(template_path, "r") as f:
-                content = f.read()
-            logger.debug(f"Successfully read template ({len(content)} bytes)")
-            return content
+            return template_path
     
     # If we get here, we couldn't find the template
     error_msg = f"Template file '{template_name}' not found. Attempted paths: {attempted_paths}"
     logger.error(error_msg)
     raise FileNotFoundError(error_msg)
+
+
+def open_template(template_name):
+    """Return the contents of a template file (see ``locate_template``).
+
+    Raises:
+        FileNotFoundError: If the template file cannot be located
+    """
+    template_path = locate_template(template_name)
+    with open(template_path, "r") as f:
+        content = f.read()
+    logger.debug(f"Successfully read template ({len(content)} bytes)")
+    return content
+
+
+def _config_provenance(config_text, template_name):
+    """Return ``(config_json, template_sha256)`` for a rendered pdr_config.json.
+
+    ``config_json`` is the rendered config parsed to a normalized dict, or None
+    (with a WARNING) if it does not parse; ``template_sha256`` is the sha256 of
+    the template file (None if the file cannot be hashed). Never raises: the
+    provenance record must not make a model run fail.
+    """
+    import hashlib
+    import json
+    template_sha256 = None
+    try:
+        with open(locate_template(template_name), "rb") as fh:
+            template_sha256 = hashlib.sha256(fh.read()).hexdigest()
+    except Exception as exc:
+        logger.warning(f"Could not hash template {template_name}: {exc}")
+    parsed = None
+    try:
+        # Same tolerance as the preflight check and json-fortran: comments
+        # (strip_json_comments) and trailing commas.
+        from pdr_run.cli.preflight import strip_json_comments
+        stripped = strip_json_comments(config_text)
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = json.loads(re.sub(r',(\s*[}\]])', r'\1', stripped))
+    except Exception as exc:
+        logger.warning(f"Rendered pdr_config.json is not parseable ({exc}); "
+                       "config_json stays NULL")
+        parsed = None
+    return parsed, template_sha256
 
 def format_scientific(value):
     """Format a number in scientific notation.
@@ -452,6 +495,17 @@ def create_json_from_job_id(job_id, session=None, return_content=False, config=N
         with open(output_path, "w") as f:
             f.write(output)
         
+        # Full-config provenance on the job row (never fatal; NULL if the
+        # database has no such columns yet or the config does not parse).
+        if hasattr(job, 'config_json'):
+            try:
+                job.config_json, job.template_sha256 = _config_provenance(
+                    output, json_template_file_name)
+                _session.commit()
+            except Exception as exc:
+                _session.rollback()
+                logger.warning(f"Could not store config provenance for job {job_id}: {exc}")
+
         # Register the JSON file in the database
         from pdr_run.database.json_handlers import register_json_file
         register_json_file(job_id=job_id, name="pdr_config.json", path=os.path.abspath(output_path), session=_session)

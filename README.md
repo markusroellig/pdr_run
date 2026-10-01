@@ -110,10 +110,10 @@ What is checked (`name` as shown in the report):
 |---|---|
 | Configuration | `config.file` (loaded? no `pdr:` section means the runner discards the file), `config.sections` (unknown sections abort a run), `config.env` (which `PDR_*` variables override the file, and which the code silently IGNORES because the file defines that section), `config.secrets` (password set/not set; values are never printed), `python.imports` |
 | KOSMA-tau install | `kt.base_dir`, `kt.rundir_write` (probe file), `kt.exe.pdr/onion/getctrlind/mrt` (exist + executable), `kt.pdr_version` (`pdrexe --version`, `-dirty` is a WARN), `kt.input_dirs` (symlinks resolve) |
-| Templates and inputs | `tpl.json` (found, placeholders substituted as in a real job, parsed with json-fortran-style comments), `tpl.chem_network`, `tpl.binding_energies`, `tpl.fuv_file` (only if `ifuvtype` 5/6) |
+| Templates and inputs | `tpl.json` (found, placeholders substituted as in a real job, parsed with json-fortran-style comments), `tpl.provenance` (config provenance is recorded; template sha256), `tpl.chem_network`, `tpl.binding_energies`, `tpl.fuv_file` (only if `ifuvtype` 5/6) |
 | Scratch and disk | `tmp.dir` (writable), `disk.free` (per filesystem, WARN below `--min-free-gb`) |
 | Storage | `storage` (local, sftp or rclone: write probe, read back, compare, delete; latency) |
-| Database | `db.connect` (+ server version), `db.tables`, `db.columns`, `db.additive_columns` (the 11 run-status / UV-continuum columns), `db.rows`, `db.stale_jobs`, `db.write_rollback` (INSERT rolled back) |
+| Database | `db.connect` (+ server version), `db.tables`, `db.columns`, `db.additive_columns` (the 13 run-status / UV-continuum / config-provenance columns), `db.rows`, `db.stale_jobs`, `db.write_rollback` (INSERT rolled back) |
 | Post-processing | `post.onion` (`ONION3.INP.<species>` for every species), `post.uv_continuum` (`kosma_h2` importable, data files), `post.simline` (driver, binary, molecules, config) |
 | Resources | `run.walltime` (WARN if `pdr.max_walltime_s` is unset), `run.workers` (workers, CPUs, RAM, MySQL `max_connections`) |
 
@@ -150,6 +150,50 @@ Config: /tmp/ex/cfg.yaml | detailed log: /tmp/ex/logs/pdr_run.log | 0 WARNING+ l
 Exit codes: `0` nothing FAILed (WARN and SKIP are fine), `1` at least one FAIL. With `--check-json`
 the object has `ok`, `summary` (counts), `checks` (`name`, `status`, `detail`, `elapsed_s`),
 `config_file`, `log_files`.
+
+## Querying the configuration of a job
+
+The `kosmatau_parameters` columns are only the old PDRNEW.INP parameters; everything else (h2.*,
+radiative_transfer.*, numerical_params.*, dust.*, the network file, species, abundances) is fixed in
+the JSON template. To make it queryable, every job stores, when its `pdr_config.json` is rendered,
+
+* `pdr_model_jobs.config_json` - the complete resolved config the job ran with (placeholders
+  substituted), parsed to a normalized JSON object (comments and trailing commas, which json-fortran
+  accepts, are removed; `JSON` on MySQL, text with the JSON functions on SQLite);
+* `pdr_model_jobs.template_sha256` - sha256 of the template file it was rendered from.
+
+The record belongs to the job (not to `json_files`, whose rows are deduplicated by file hash and
+shared between jobs). A job that is skipped because its result already exists is rendered all the
+same, so it carries the config it would have run with (a `--rerun` job gets the new one). If the
+config does not parse, `config_json` is NULL and a WARNING is logged; the run is not affected.
+Old databases get the columns automatically (`ensure_additive_columns`); jobs created before have NULL.
+
+```sql
+-- jobs with h2.gas_seed_h3p_shape = 1
+SELECT id, model_job_name FROM pdr_model_jobs
+ WHERE config_json->>'$.h2.gas_seed_h3p_shape' = '1';
+
+-- the network file of a job
+SELECT config_json->>'$.chemical_network_file' FROM pdr_model_jobs WHERE id = 123;
+
+-- jobs whose species list contains "HCO18O+"
+SELECT id FROM pdr_model_jobs
+ WHERE JSON_CONTAINS(config_json->'$.species', '"HCO18O+"');
+
+-- jobs rendered from a given template
+SELECT COUNT(*) FROM pdr_model_jobs WHERE template_sha256 = '<sha256 from pdr_run --check>';
+```
+
+For a frequently used key, a generated column plus an index (MySQL 5.7+):
+
+```sql
+ALTER TABLE pdr_model_jobs
+  ADD COLUMN h3p_shape INT GENERATED ALWAYS AS (config_json->>'$.h2.gas_seed_h3p_shape') VIRTUAL,
+  ADD INDEX idx_h3p_shape (h3p_shape);
+```
+
+SQLite supports `json_extract(config_json, '$.h2.gas_seed_h3p_shape')` (and `json_each` for lists);
+in SQLAlchemy use `PDRModelJob.config_json['h2']['gas_seed_h3p_shape'].as_integer()`.
 
 ## Configuration
 

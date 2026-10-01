@@ -53,6 +53,8 @@ _PDR_MODEL_JOB_ADDITIVE_COLUMNS = [
     ('uvcont_closure_ok', 'BOOLEAN'),
     ('uvcont_error', 'TEXT'),
     ('postproc_error', 'TEXT'),
+    ('config_json', 'JSON'),
+    ('template_sha256', 'VARCHAR(64)'),
 ]
 
 

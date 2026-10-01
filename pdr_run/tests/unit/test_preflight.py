@@ -101,12 +101,16 @@ def test_all_pass(tmp_path, config):
     assert rc == 0, [c for c in data['checks'] if c['status'] == 'FAIL']
     assert data['ok'] is True
     for name in ('config.file', 'kt.exe.pdr', 'kt.exe.onion', 'kt.exe.getctrlind',
-                 'kt.exe.mrt', 'kt.pdr_version', 'tpl.json', 'tpl.chem_network',
+                 'kt.exe.mrt', 'kt.pdr_version', 'tpl.json', 'tpl.provenance', 'tpl.chem_network',
                  'tpl.binding_energies', 'storage', 'db.connect', 'db.tables',
                  'db.columns', 'db.additive_columns', 'db.rows', 'db.stale_jobs',
                  'db.write_rollback', 'post.onion', 'run.walltime'):
         assert checks[name]['status'] == 'PASS', checks[name]
     assert 'v9.9.9' in checks['kt.pdr_version']['detail']
+    import hashlib
+    sha = hashlib.sha256(open(TEMPLATE, 'rb').read()).hexdigest()
+    assert 'config_json' in checks['tpl.provenance']['detail']
+    assert sha in checks['tpl.provenance']['detail']
     assert checks['post.uv_continuum']['status'] == 'SKIP'
     assert checks['post.simline']['status'] == 'SKIP'
 
