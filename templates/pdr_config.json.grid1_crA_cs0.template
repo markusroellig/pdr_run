@@ -15,7 +15,7 @@
     "radiation_field_strength": KT_VARsint_,
     "radiation_field_strength_comment": "Strength of incident UV radiation field in Draine units: SINT",
     "cosmic_ray_rate": 1.0e-16,
-    "cosmic_ray_rate_comment": "Cosmic-ray ionisation rate per H2 molecule (UMIST convention): COSRAY. Co-author decision 2026-10-02: 1.0e-16 s^-1, unattenuated value at N_eff <= N0 (attenuation mode 1 below), independent of clump size",
+    "cosmic_ray_rate_comment": "Cosmic-ray rate parameter COSRAY of the network (UMIST convention). Co-author decision 2026-10-02: 1.0e-16 s^-1, unattenuated value at N_eff <= N0 (attenuation mode 1 below), independent of clump size. Conversion: the H2 ionisation rate per H2 (incl. secondaries) is zeta^ion(H2) = 0.945 x COSRAY (sum of the H2 CRP ionising rows 1.20e-17 + 2.86e-19 + 3.9e-21 over the UMIST 1.3e-17 normalisation; mod_parameters.f90, cosray)",
     "cr_attenuation_mode": 1,
     "cr_attenuation_mode_comment": "CR attenuation (cr_attenuation.f90): 1 = power law zeta = cosmic_ray_rate (N_eff/N0)^(-a) for N_eff > N0, continuous at N0; Teo Topkaras' fit to the Padovani et al. model H, form of Padovani, Galli & Glassgold 2009 Eq. 27 (co-author decision 2026-10-01)",
     "cr_attenuation_index": 0.4,
