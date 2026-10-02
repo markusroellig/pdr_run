@@ -1,5 +1,5 @@
 {
-  "config_comment": "KOSMA-tau GRID 1 template (frozen 2026-10-01). Network chem_rates_grid1_2026-10.dat, 172 species, abundances of GRID1_ELEMENT_ABUNDANCES_PROPOSAL_2026-09-30. Every grid-1 decision of 30 Sept / 1 Oct (D2, D7, D9, D10, D12, D13, D15, D19, ER, F, F2, CS, clamp, B4, U-1, zeta) is set explicitly, also where the code default equals it; the other keys new on grid1/integration are pinned at their code defaults. Built by reports/scripts/make_grid1_template.py from rundir/pdr_config.json.g1c_off_iso1001_ab1001; binary: grid1/integration build (pdrexe_grid1_<hash>_prec_halley). Revised 2026-10-01 afternoon: U-1 on (heating.cr_heating_per_ionisation 1). Revised 2026-10-02: C4-(b), carbon_shielding_convergence 0 (make_grid1_cs0_templates.py).",
+  "config_comment": "KOSMA-tau GRID 1 template (frozen 2026-10-01). Network chem_rates_grid1_2026-10.dat, 172 species, abundances of GRID1_ELEMENT_ABUNDANCES_PROPOSAL_2026-09-30. Every grid-1 decision of 30 Sept / 1 Oct (D2, D7, D9, D10, D12, D13, D15, D19, ER, F, F2, CS, clamp, B4, U-1, zeta) is set explicitly, also where the code default equals it; the other keys new on grid1/integration are pinned at their code defaults. Built by reports/scripts/make_grid1_template.py from rundir/pdr_config.json.g1c_off_iso1001_ab1001; binary: grid1/integration build (pdrexe_grid1_<hash>_prec_halley). Revised 2026-10-01 afternoon: U-1 on (heating.cr_heating_per_ionisation 1). Revised 2026-10-02: C4-(b), carbon_shielding_convergence 0, tau_c 1000 s (make_grid1_cs0_templates.py).",
   "config_comment_comment": "Node values (surface_density, cloud_radius, radiation_field_strength, metallicity) are set by the driver (run_node_parallel.sh) or by pdr_run (the four placeholders of this template); nothing else differs between nodes.",
   "physical_params": {
     "surface_density": KT_VARxnsur_,
@@ -129,7 +129,8 @@
     "use_gbar_approximation": 0,
     "use_gbar_approximation_comment": "Use g-bar approximation for H2: h2_use_gbar. 1=yes, 0=no (grid choice; rundir/pdr_config.json uses 1 - the missing Dv>=1 transitions get 1e-50 with 0)",
     "grain_op_conversion": 1,
-    "grain_op_tau_c": 60.0,
+    "grain_op_tau_c": 1000.0,
+    "grain_op_tau_c_comment": "decision 2026-10-02: spin-conversion time on grains [s], within the lab range 5e2-5e3 s at 10-16 K (Ueta 2016, Tsuge 2021); entry 2026-10-02_grid1-tauc1000-gd: x1.6 in o/p at A_V 1e-4 against 60 s at (5,0,0), structure unchanged",
     "grain_op_binding_energy": -1.0,
     "grain_op_binding_width": 100.0,
     "grain_op_comment": "D7 (2026-09-29): residence-time model, tau_c 60 s, Gaussian site binding energies sigma 100 K around E_D of the binding-energy file (binding_energy -1 = file value, pinned default)",
