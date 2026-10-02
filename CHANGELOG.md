@@ -54,6 +54,14 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 - **Column `execution_time`** (`461174a`): wall time of `pdrexe` per job (NULL for skipped nodes).
 - **`model_params` alias** (`461174a`): the grid axes are read from `model_params` (canonical) or
   `model_parameters` (alias); giving both is an error, and `--check` names the key in use.
+- **Grid status snapshot** `pdr_run status [--json]` (`6e5a5c5`, from `feature/status-json` `78caec4`): strictly
+  read-only view of one grid (SQLite `mode=ro`, MySQL `READ ONLY` session, SELECT only) for the Grid Run Monitor
+  dashboard; schema `pdr_run.status/1` (`pdr_run/schemas/status_v1.schema.json`). Per-node state (latest
+  non-skipped row), running jobs with elapsed time vs the wall-time cap, run-time samples and ETA inputs,
+  `--since` events, optional local probes (`--with-local`) and MVP physics (`--with-physics`, h5py: surface/deep
+  gas T, H2 IR line total, column o/p, A_V of the H/H2 front; cached per file). `config_json`, user names and
+  passwords never enter the payload; configured secrets are scrubbed from the text. Intended for a read-only
+  database user. See [Grid Status Snapshot](README.md#grid-status-snapshot-pdr_run-status).
 
 ### Changed
 
