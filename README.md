@@ -2,13 +2,17 @@
 
 This document provides instructions for installing, configuring, and testing the PDR (Photo-Dissociation Region) framework.
 
+Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Table of Contents
 - [Installation](#installation)
 - [Preflight Check](#preflight-check)
+- [Querying the configuration of a job](#querying-the-configuration-of-a-job)
 - [Configuration](#configuration)
   - [Configuration Precedence](#configuration-precedence)
   - [Database Configuration](#database-configuration)
   - [Storage Configuration](#storage-configuration)
+    - [Local copy of remote results](#local-copy-of-remote-results-use_local_copy)
 - [MySQL Setup](#mysql-setup)
 - [SFTP Storage Setup](#sftp-storage-setup)
 - [Running a Test Model](#running-a-test-model)
@@ -22,12 +26,15 @@ This document provides instructions for installing, configuring, and testing the
 - [Wall-Time Cap](#wall-time-cap)
 - [Stale-Job Recovery](#stale-job-recovery)
 - [Storage Retries](#storage-retries)
+  - [Whole-file compression of stored results](#whole-file-compression-of-stored-results)
+  - [RClone storage on S3](#rclone-storage-on-s3)
   - [Placeholder checksums](#placeholder-checksums)
 - [Post-Processing Steps](#post-processing-steps)
   - [UV continuum](#uv-continuum)
   - [ONION](#onion)
   - [SIMLINE](#simline)
 - [Production Grid Run](#production-grid-run)
+  - [Grid-1 template](#grid-1-template)
 - [Troubleshooting](#troubleshooting)
   - [Known Limitations](#known-limitations)
 
@@ -792,9 +799,9 @@ started in its own session (`start_new_session=True`, no shell), and `Popen.wait
 is used. On expiry the whole process group is sent `SIGTERM`; if it is still alive after 10 s it gets
 `SIGKILL`, and pdr_run waits up to 30 s more to reap it. The run is then classified `timeout` (no other
 source is consulted), the error `wall-time cap of ...s exceeded, killing process group` is logged, and the
-worker moves on. Note the caveat under
-[How a failed or non-converged model shows up](#how-a-failed-or-non-converged-model-shows-up): the final
-status of a timed-out job may be `exception_runtime`. The cap applies to `pdrexe` only, not to ONION, SIMLINE (own
+worker moves on. A timed-out job keeps the status `timeout` (no post-processing runs for it, only its logs
+are stored), and `execution_time` holds the wall time up to the kill. Recompute timed-out nodes later with a
+larger cap, e.g. `pdr_run --rerun timeout --config grid_longcap.yaml`. The cap applies to `pdrexe` only, not to ONION, SIMLINE (own
 `simline.timeout`, default 3600 s) or the UV continuum (own `uv_continuum.timeout`, default 300 s).
 
 ```yaml
@@ -1099,6 +1106,16 @@ The `KOSMAtauExecutable` table records the file name, code revision, compilation
 executable, so the run stays traceable. Use `pdr.pdr_file_name` for the pinned copy; per-grid templates can
 also be passed with `--json-template`. Keep the hashes in your run notes.
 
+#### Grid-1 template
+
+`templates/pdr_config.json.grid1.template` is the frozen KOSMA-tau configuration of grid 1 (2026-10). It sets
+every grid-1 decision explicitly and leaves exactly four node placeholders, filled per job from the
+`model_params` axes: `KT_VARxnsur_` (surface density), `KT_VARrtot_` (cloud radius, from the clump mass),
+`KT_VARsint_` (FUV field) and `KT_VARzmetal_` (metallicity). Copy it to `<pdr.base_dir>/templates/` (or pass it with
+`--json-template`) and record its SHA-256; every job also stores the hash (`template_sha256`) and the resolved
+configuration (`config_json`, see [Querying the configuration of a job](#querying-the-configuration-of-a-job)).
+`pdr_run --check` renders it as a real job would and FAILs on any `KT_VAR` token left unfilled (`tpl.json`).
+
 ### 4. Run `pdr_run --check` until READY
 
 ```bash
@@ -1246,6 +1263,9 @@ make test-db
 
 # Run MySQL integration tests
 python pdr_run/tests/integration/run_mysql_tests.py
+# The tests that DROP a database or user are skipped unless explicitly allowed, and they only
+# touch test_-prefixed names (user test_pdr_user, database test_pdr_<id>) - never the production database
+PDR_ALLOW_DESTRUCTIVE_DB_TESTS=1 python -m pytest pdr_run/tests/integration/test_mysql_integration.py
 
 # Run storage tests
 make test-storage
