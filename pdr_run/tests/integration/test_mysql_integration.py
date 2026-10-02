@@ -31,6 +31,30 @@ TEST_MYSQL_ROOT_USER = os.environ.get("PDR_TEST_DB_ROOT_USER", "root")
 TEST_MYSQL_ROOT_PASSWORD = os.environ.get("PDR_TEST_DB_ROOT_PASSWORD", "rootpassword")
 # --- END: Sandbox-aware MySQL Configuration ---
 
+# --- Safety guard: this suite issues DROP DATABASE / DROP USER with root rights. ---
+ALLOW_DESTRUCTIVE_ENV = "PDR_ALLOW_DESTRUCTIVE_DB_TESTS"
+TEST_DB_PREFIX = "test_"
+TEST_DB_USER = "test_pdr_user"
+
+
+def destructive_tests_allowed():
+    """True only with PDR_ALLOW_DESTRUCTIVE_DB_TESTS=1 (explicit opt-in)."""
+    return os.environ.get(ALLOW_DESTRUCTIVE_ENV) == "1"
+
+
+def require_destructive_ok(db_name, user_name=TEST_DB_USER):
+    """Raise unless the opt-in env var is set AND the database and the user to
+    be dropped are clearly test objects (name starts with ``test_``), so the
+    suite can never drop a production database such as ``pdr_grid1`` or the
+    production user ``pdr_user``."""
+    if not destructive_tests_allowed():
+        raise RuntimeError(f"destructive MySQL tests refused: set {ALLOW_DESTRUCTIVE_ENV}=1 "
+                           "(only on a throw-away MySQL server)")
+    for what, name in (("database", db_name), ("user", user_name)):
+        if not str(name).startswith(TEST_DB_PREFIX):
+            raise RuntimeError(f"destructive MySQL tests refused: {what} name {name!r} "
+                               f"does not start with {TEST_DB_PREFIX!r}")
+
 # Fix the Python path - go up to the directory containing the pdr_run package
 # Current: /home/roellig/pdr/pdr/pdr_run/pdr_run/tests/integration/test_mysql_integration.py
 # Target:  /home/roellig/pdr/pdr/pdr_run (contains pdr_run package)
@@ -85,7 +109,7 @@ class MySQLIntegrationTest:
     """Comprehensive MySQL integration test suite."""
     
     def __init__(self):
-        self.test_db_name = f"pdr_test_{uuid.uuid4().hex[:8]}"
+        self.test_db_name = f"test_pdr_{uuid.uuid4().hex[:8]}"
         self.original_env = {}
         self.connection = None
         
@@ -107,7 +131,7 @@ class MySQLIntegrationTest:
             'PDR_DB_HOST': 'localhost',
             'PDR_DB_PORT': '3306',
             'PDR_DB_DATABASE': self.test_db_name,
-            'PDR_DB_USERNAME': 'pdr_user',
+            'PDR_DB_USERNAME': 'test_pdr_user',
             'PDR_DB_PASSWORD': 'pdr_password',
             'PDR_STORAGE_TYPE': 'local',
             'PDR_STORAGE_DIR': tempfile.mkdtemp()
@@ -138,6 +162,7 @@ class MySQLIntegrationTest:
             'autocommit': True
         }
         
+        require_destructive_ok(self.test_db_name)
         try:
             logger.info("Connecting to MySQL as root to create test database...")
             root_conn = mysql.connector.connect(**root_config)
@@ -149,11 +174,11 @@ class MySQLIntegrationTest:
             logger.info(f"Created database: {self.test_db_name}")
             
             # Ensure user exists and has permissions
-            cursor.execute(f"DROP USER IF EXISTS 'pdr_user'@'%'")
-            cursor.execute(f"CREATE USER 'pdr_user'@'%' IDENTIFIED BY 'pdr_password'")
-            cursor.execute(f"GRANT ALL PRIVILEGES ON {self.test_db_name}.* TO 'pdr_user'@'%'")
+            cursor.execute(f"DROP USER IF EXISTS 'test_pdr_user'@'%'")
+            cursor.execute(f"CREATE USER 'test_pdr_user'@'%' IDENTIFIED BY 'pdr_password'")
+            cursor.execute(f"GRANT ALL PRIVILEGES ON {self.test_db_name}.* TO 'test_pdr_user'@'%'")
             cursor.execute("FLUSH PRIVILEGES")
-            logger.info("User 'pdr_user' created and granted permissions")
+            logger.info("User 'test_pdr_user' created and granted permissions")
             
             cursor.close()
             root_conn.close()
@@ -173,6 +198,7 @@ class MySQLIntegrationTest:
             'autocommit': True
         }
         
+        require_destructive_ok(self.test_db_name)
         try:
             root_conn = mysql.connector.connect(**root_config)
             cursor = root_conn.cursor()
@@ -263,7 +289,7 @@ class MySQLIntegrationTest:
             config = {
                 'type': 'mysql',
                 'host': 'localhost',
-                'username': 'pdr_user',
+                'username': 'test_pdr_user',
                 'password': 'wrong_password',  # This should be overridden
                 'database': self.test_db_name
             }
@@ -433,7 +459,7 @@ class MySQLIntegrationTest:
             config = {
                 'type': 'mysql',
                 'host': 'localhost',
-                'username': 'pdr_user',
+                'username': 'test_pdr_user',
                 'password': 'wrong_password',
                 'database': self.test_db_name
             }
@@ -503,6 +529,8 @@ class MySQLIntegrationTest:
         logger.info("STARTING MYSQL INTEGRATION TESTS")
         logger.info("=" * 60)
         
+        require_destructive_ok(self.test_db_name)
+
         # Check if MySQL connector is available
         if not MYSQL_AVAILABLE:
             logger.error("MySQL connector not available. Install with: pip install mysql-connector-python")
@@ -589,6 +617,8 @@ def test_mysql_integration_with_pytest():
 @pytest.mark.integration
 def test_mysql_integration_manual():
     """Manual MySQL integration test (use with pytest -m mysql)."""
+    if not destructive_tests_allowed():
+        pytest.skip(f"destructive MySQL test (DROP DATABASE/USER): set {ALLOW_DESTRUCTIVE_ENV}=1")
     # Skip test if MySQL is not available
     if not is_mysql_available():
         pytest.skip("MySQL service not available on localhost:3306. Skipping integration test.")

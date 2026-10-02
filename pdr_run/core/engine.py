@@ -179,10 +179,14 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
                 'parameters': DEFAULT_PARAMETERS
             }
 
-        # Map model_params to parameters for backward compatibility
-        if 'model_params' in config and 'parameters' not in config:
-            logger.info("Mapping 'model_params' to 'parameters' for compatibility")
-            config['parameters'] = config['model_params']
+        # Map model_params (canonical) or model_parameters (accepted alias,
+        # as in the README grid example) to parameters
+        if 'parameters' not in config:
+            for key in ('model_params', 'model_parameters'):
+                if config.get(key) is not None:
+                    logger.info(f"Mapping '{key}' to 'parameters' for compatibility")
+                    config['parameters'] = config[key]
+                    break
 
         # Log configuration details
         logger.debug("Configuration details:")

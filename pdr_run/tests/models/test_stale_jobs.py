@@ -112,3 +112,43 @@ def test_reset_stale_jobs_leaves_unrelated_jobs_untouched(db_session, make_job):
     db_session.refresh(fresh_job)
     assert fresh_job.status == 'running'
     assert fresh_job.active is True
+
+
+def test_reset_clears_pending_on_running_rows(db_session, make_job):
+    """A killed driver leaves rows with pending = 1; the reset clears it."""
+    job = make_job(status='running', time_of_start=datetime.now() - timedelta(hours=10),
+                   active=True, pending=True)
+    assert reset_stale_jobs(db_session, stale_after_s=DEFAULT_STALE_AFTER_S) == [job.id]
+    db_session.refresh(job)
+    assert (job.status, job.active, job.pending) == (STATUS_RESET_STALE, False, False)
+
+
+def test_reset_also_covers_never_started_pending_rows(db_session, make_job):
+    old = datetime.now() - timedelta(hours=10)
+    job = make_job(status='pending', pending=True, active=False, time_created=old)
+    assert find_stale_jobs(db_session, stale_after_s=DEFAULT_STALE_AFTER_S) == []  # grid warning: running only
+    assert reset_stale_jobs(db_session, stale_after_s=DEFAULT_STALE_AFTER_S) == [job.id]
+    db_session.refresh(job)
+    assert (job.status, job.pending) == (STATUS_RESET_STALE, False)
+
+
+def test_young_rows_need_a_small_threshold(db_session, make_job):
+    """Default threshold keeps young rows; --stale-after-hours 0 resets them."""
+    running = make_job(status='running', time_of_start=datetime.now() - timedelta(minutes=5),
+                       active=True, pending=True, model_job_name='r')
+    pending = make_job(status='pending', pending=True, time_created=datetime.now() - timedelta(minutes=5),
+                       model_job_name='p')
+    assert reset_stale_jobs(db_session, stale_after_s=DEFAULT_STALE_AFTER_S) == []
+    ids = reset_stale_jobs(db_session, stale_after_s=0)
+    assert sorted(ids) == sorted([running.id, pending.id])
+    for j in (running, pending):
+        db_session.refresh(j)
+        assert j.pending is False and j.status == STATUS_RESET_STALE
+
+
+def test_reset_leaves_finished_rows_alone(db_session, make_job):
+    done = make_job(status='finished', pending=False, active=False,
+                    time_created=datetime.now() - timedelta(hours=10))
+    assert reset_stale_jobs(db_session, stale_after_s=0) == []
+    db_session.refresh(done)
+    assert done.status == 'finished'

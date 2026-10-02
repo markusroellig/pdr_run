@@ -429,6 +429,27 @@ def check_config_sections(ctx: Ctx):
     return PASS, "all sections and keys known"
 
 
+def check_model_params_key(ctx: Ctx):
+    """Name the config key that carries the grid axes (model_params is canonical,
+    model_parameters is accepted as an alias by the engine and the CLI)."""
+    cfg = ctx.file_config
+    if cfg is None:
+        _skip("no config file")
+    present = [k for k in ('model_params', 'model_parameters') if cfg.get(k) is not None]
+    if len(present) == 2:
+        _fail("both 'model_params' and 'model_parameters' are set - keep only "
+              "'model_params' (the run would merge them, model_parameters last)")
+    if not present:
+        return WARN, "no 'model_params' section: the built-in default grid axes are used"
+    body = cfg[present[0]]
+    axes = ', '.join(f"{k}={len(v) if isinstance(v, list) else 1}" for k, v in body.items()
+                     if k in ('metal', 'dens', 'mass', 'chi')) if isinstance(body, dict) else ''
+    if present[0] == 'model_parameters':
+        return WARN, (f"key 'model_parameters' (alias; canonical is 'model_params') accepted; "
+                      f"axis sizes: {axes}")
+    return PASS, f"key 'model_params'; axis sizes: {axes}"
+
+
 # -------------------------------------------------- 2. KOSMA-tau installation
 
 def check_base_dir(ctx: Ctx):
@@ -710,6 +731,32 @@ def check_tmp_dir(ctx: Ctx):
     ctx.disk_paths['temp dir'] = tmp
     src = 'TMPDIR' if os.environ.get('TMPDIR') else 'system default'
     return PASS, f"{tmp} writable ({src}); jobs run in {tmp}/pdr-job*"
+
+
+def check_local_copy(ctx: Ctx):
+    """storage.use_local_copy for remote backends: where the copies land."""
+    from pdr_run.storage.base import resolve_local_copy
+    st = _resolve_storage(ctx)
+    sc = (ctx.eff.get('storage') or {}) if st['source'] == 'config' else {}
+    if st['type'] not in ('sftp', 'rclone'):
+        _skip(f"storage type '{st['type']}' stores locally already")
+    if not sc.get('use_local_copy', True):
+        return PASS, "storage.use_local_copy: false (only the remote copy exists)"
+    lc = resolve_local_copy(sc, st['type'])
+    if lc is None:
+        return WARN, ("storage.use_local_copy is on but no root: set storage.local_copy_dir "
+                      "(sftp base_dir is a path on the server) - no local copy will be kept")
+    model = _pdr_cfg(ctx, 'model_name') or '<model_name>'
+    example = os.path.join(lc.root, lc.relative_key(
+        os.path.join(sc.get('base_dir') or '', model, 'pdrgrid', 'pdrstruct<model>.hdf5')))
+    anc = _nearest_existing(lc.root)
+    if not os.access(anc, os.W_OK):
+        _fail(f"local copy root {lc.root} is not writable (nearest existing {anc})")
+    free = shutil.disk_usage(anc).free / 1e9
+    ctx.disk_paths['local copy'] = anc
+    note = '' if os.path.isdir(lc.root) else ' (created at the first store)'
+    return PASS, (f"local copy root {lc.root}{note}, {free:.0f} GB free; e.g. {example}; "
+                  "a failed copy only logs a WARNING")
 
 
 def check_disk_space(ctx: Ctx):
@@ -1072,8 +1119,21 @@ def check_db_stale(ctx: Ctx):
         select(func.count()).select_from(jobs).where(jobs.c.status == 'running')
         .where(jobs.c.time_of_start.isnot(None)).where(jobs.c.time_of_start < cutoff)).scalar()
     detail = f"running={running}, stale(>{stale_s / 3600:.1f} h)={stale}"
+    model = _pdr_cfg(ctx, 'model_name')
+    names = Base.metadata.tables.get('model_names')
+    if model and names is not None and 'model_names' in (ctx.db_tables or set()):
+        pend = ctx.db_conn.execute(
+            select(func.count()).select_from(jobs.join(names, jobs.c.model_name_id == names.c.id))
+            .where(names.c.model_name == model).where(jobs.c.pending.is_(True))).scalar()
+        runn = ctx.db_conn.execute(
+            select(func.count()).select_from(jobs.join(names, jobs.c.model_name_id == names.c.id))
+            .where(names.c.model_name == model).where(jobs.c.status == 'running')).scalar()
+        detail += f"; model '{model}': pending={pend}, running={runn}"
+        if (pend or runn) and not stale:
+            return WARN, detail + (" - leftovers of a killed driver? --reset-stale-jobs "
+                                   "[--stale-after-hours H] (0 = all); ignore if a run is active")
     if stale:
-        return WARN, detail + " - reset with: pdr_run --reset-stale-jobs"
+        return WARN, detail + " - reset with: pdr_run --reset-stale-jobs [--stale-after-hours H]"
     return PASS, detail
 
 
@@ -1291,6 +1351,7 @@ def check_imports(ctx: Ctx):
 CHECKS: List[Tuple[str, Callable[[Ctx], Tuple[str, str]]]] = [
     ('config.file', check_config_file),
     ('config.sections', check_config_sections),
+    ('config.model_params', check_model_params_key),
     ('config.env', check_config_env),
     ('config.secrets', check_config_secrets),
     ('python.imports', check_imports),
@@ -1309,6 +1370,7 @@ CHECKS: List[Tuple[str, Callable[[Ctx], Tuple[str, str]]]] = [
     ('tpl.fuv_file', check_fuv),
     ('tmp.dir', check_tmp_dir),
     ('storage', check_storage),
+    ('storage.local_copy', check_local_copy),
     ('disk.free', check_disk_space),
     ('db.connect', check_db_connect),
     ('db.tables', check_db_tables),

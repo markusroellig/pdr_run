@@ -8,6 +8,7 @@ GitHub issue #7.
 import os
 import tempfile
 import pytest
+from unittest.mock import patch
 from pdr_run.storage.remote import RCloneStorage
 
 
@@ -142,37 +143,35 @@ def test_remote_path_prefix_from_env():
         os.environ.pop('PDR_STORAGE_RCLONE_REMOTE', None)
 
 
-def test_github_issue_7_example():
-    """Test the specific example from GitHub issue #7."""
-
+def _issue7_storage(remote_type):
+    """RCloneStorage with the issue-7 config and a fixed remote type, so that
+    the result does not depend on the host's rclone configuration."""
     config = {
         'base_dir': '/tmp/test',
         'rclone_remote': 'kosmatau:',
+        'rclone_remote_type': remote_type,      # no `rclone listremotes` lookup
         'use_mount': False,
         'remote_path_prefix': '/home/ossk/kosma-tau/kosma-tau/rundir'
     }
+    with patch('pdr_run.storage.remote.subprocess.run'):   # `rclone version` check
+        return RCloneStorage(config)
 
-    storage = RCloneStorage(config)
 
-    # The problematic path from the issue
-    input_path = '/home/ossk/kosma-tau/kosma-tau/rundir/lowUV-C18O/oniongrid/ONION100_3.0_1.0_1.0_00.jerg_CO.smli'
+ISSUE7_INPUT = ('/home/ossk/kosma-tau/kosma-tau/rundir/lowUV-C18O/oniongrid/'
+                'ONION100_3.0_1.0_1.0_00.jerg_CO.smli')
 
-    result = storage._get_full_remote_path(input_path)
 
-    # Expected result: prefix should be stripped
-    expected = 'kosmatau:/lowUV-C18O/oniongrid/ONION100_3.0_1.0_1.0_00.jerg_CO.smli'
+def test_github_issue_7_example():
+    """GitHub issue #7: the prefix is stripped (ordinary remote: absolute path)."""
+    result = _issue7_storage('sftp')._get_full_remote_path(ISSUE7_INPUT)
+    assert result == 'kosmatau:/lowUV-C18O/oniongrid/ONION100_3.0_1.0_1.0_00.jerg_CO.smli'
 
-    result = result.replace('\\', '/')
-    expected = expected.replace('\\', '/')
 
-    assert result == expected, (
-        f"GitHub issue #7 example failed\n"
-        f"Input: {input_path}\n"
-        f"Expected: {expected}\n"
-        f"Got: {result}"
-    )
-
-    print("✓ GitHub issue #7 example test passed!")
+def test_github_issue_7_example_s3_has_no_leading_slash():
+    """On an S3 remote the first component is the bucket and a leading slash is
+    dropped (S3 hardening); the prefix is stripped just the same."""
+    result = _issue7_storage('s3')._get_full_remote_path(ISSUE7_INPUT)
+    assert result == 'kosmatau:lowUV-C18O/oniongrid/ONION100_3.0_1.0_1.0_00.jerg_CO.smli'
 
 
 if __name__ == '__main__':

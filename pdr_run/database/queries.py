@@ -370,7 +370,8 @@ def summarize_job_states(job_ids: List[int], session: Optional[Session] = None):
 
 
 def find_stale_jobs(session: Optional[Session] = None,
-                     stale_after_s: float = DEFAULT_STALE_AFTER_S) -> List[PDRModelJob]:
+                     stale_after_s: float = DEFAULT_STALE_AFTER_S,
+                     include_pending: bool = False) -> List[PDRModelJob]:
     """Find jobs stuck in status ``'running'`` that are almost certainly
     abandoned by a crashed or killed driver process rather than still
     genuinely executing.
@@ -392,6 +393,11 @@ def find_stale_jobs(session: Optional[Session] = None,
             still-'running' job is considered abandoned. Pass e.g.
             ``config['pdr']['max_walltime_s'] * 1.5`` when a wall-time cap
             is configured for a tighter, run-specific threshold.
+        include_pending: Also select jobs that never started (status
+            ``'pending'``, ``pending = 1``) whose ``time_created`` is older
+            than the threshold: the queued rows a killed driver leaves behind.
+            Used by ``reset_stale_jobs()``; the warning that every grid run
+            logs only looks at 'running' rows.
 
     Returns:
         List of stale ``PDRModelJob`` rows (may be attached to a locally
@@ -413,6 +419,15 @@ def find_stale_jobs(session: Optional[Session] = None,
             .filter(PDRModelJob.time_of_start < cutoff)
             .all()
         )
+        if include_pending:
+            stale += (
+                _session.query(PDRModelJob)
+                .filter(PDRModelJob.status == 'pending')
+                .filter(PDRModelJob.pending.is_(True))
+                .filter(PDRModelJob.time_created.isnot(None))
+                .filter(PDRModelJob.time_created < cutoff)
+                .all()
+            )
         if stale:
             logger.warning(
                 "Found %d job(s) stuck in status 'running' with time_of_start "
@@ -431,8 +446,10 @@ def find_stale_jobs(session: Optional[Session] = None,
 def reset_stale_jobs(session: Optional[Session] = None,
                       stale_after_s: float = DEFAULT_STALE_AFTER_S,
                       dry_run: bool = False) -> List[int]:
-    """Mark jobs found by ``find_stale_jobs()`` as ``'reset_stale'`` so they
-    are no longer counted as ``active``/``pending`` and a human reviewing
+    """Mark jobs found by ``find_stale_jobs()`` (abandoned 'running' rows and
+    never-started 'pending' rows) as ``'reset_stale'``; ``active`` and
+    ``pending`` are cleared on every reset row, so they are no longer counted
+    as active/pending and a human reviewing
     the grid table can immediately see which nodes need a manual rerun.
 
     This does NOT create a replacement job - job creation happens once in
@@ -458,7 +475,8 @@ def reset_stale_jobs(session: Optional[Session] = None,
         session_created_locally = True
 
     try:
-        stale = find_stale_jobs(_session, stale_after_s=stale_after_s)
+        stale = find_stale_jobs(_session, stale_after_s=stale_after_s,
+                                include_pending=True)
         job_ids = [j.id for j in stale]
         if not job_ids:
             return []
@@ -471,11 +489,12 @@ def reset_stale_jobs(session: Optional[Session] = None,
             return job_ids
 
         for job in stale:
-            age_s = (datetime.now() - job.time_of_start).total_seconds()
+            since = job.time_of_start or job.time_created
+            age_s = (datetime.now() - since.replace(tzinfo=None)).total_seconds()
             logger.warning(
-                "Resetting stale job %d (%s), running since %s (%.0fs ago), "
+                "Resetting stale job %d (%s), status '%s' since %s (%.0fs ago), "
                 "to status '%s'",
-                job.id, job.model_job_name, job.time_of_start, age_s,
+                job.id, job.model_job_name, job.status, since, age_s,
                 STATUS_RESET_STALE,
             )
             job.status = STATUS_RESET_STALE

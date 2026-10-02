@@ -252,14 +252,19 @@ def parse_arguments():
     parser.add_argument(
         '--reset-stale-jobs', action='store_true',
         help="Mark jobs stuck in status 'running' (time_of_start older than "
-             "--stale-after-hours) as 'reset_stale' and exit, without "
+             "--stale-after-hours) and never-started 'pending' rows "
+             "(time_created older than that) as 'reset_stale' "
+             "(active and pending cleared) and exit, without "
              "running any model. Combine with --dry-run to only report "
              "what would be reset."
     )
     parser.add_argument(
         '--stale-after-hours', type=float, default=None,
         help='Age threshold (hours) for --reset-stale-jobs. Default: '
-             '1.5x config[pdr][max_walltime_s] if set, else 6 hours.'
+             '1.5x config[pdr][max_walltime_s] if set, else 6 hours. Rows '
+             'of a driver killed less than that ago are only reset with a '
+             'smaller value (0 = every running/pending row); use it only '
+             'when no pdr_run of that database is running.'
     )
 
     return parser.parse_args()

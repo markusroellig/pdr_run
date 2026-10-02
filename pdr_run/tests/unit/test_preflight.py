@@ -463,3 +463,73 @@ def test_cli_check_json_exit_code(tmp_path, config, install, monkeypatch, capsys
     assert exc.value.code == 1
     data = json.loads(capsys.readouterr().out)
     assert data['ok'] is False and data['summary']['FAIL'] >= 1
+
+
+# ---------------------------------------------------------------- 2026-10-02 additions
+
+def test_model_params_key_is_named(tmp_path, config):
+    del config['model_parameters']
+    config['model_params'] = {'dens': ['30', '40'], 'chi': ['0']}
+    rc, _, checks, _ = _run(tmp_path, config)
+    c = checks['config.model_params']
+    assert c['status'] == 'PASS' and "'model_params'" in c['detail'] and 'dens=2' in c['detail']
+
+
+def test_model_parameters_alias_is_warned_by_name(tmp_path, config):
+    rc, _, checks, _ = _run(tmp_path, config)      # fixture uses model_parameters
+    c = checks['config.model_params']
+    assert c['status'] == 'WARN' and "'model_parameters'" in c['detail'] and 'model_params' in c['detail']
+
+
+def test_both_model_param_keys_fail(tmp_path, config):
+    config['model_params'] = {'species': ['CO']}
+    rc, _, checks, _ = _run(tmp_path, config)
+    assert rc == 1 and checks['config.model_params']['status'] == 'FAIL'
+
+
+def test_local_copy_skipped_for_local_storage(tmp_path, config):
+    _, _, checks, _ = _run(tmp_path, config)
+    assert checks['storage.local_copy']['status'] == 'SKIP'
+
+
+def test_local_copy_reports_root_and_example(tmp_path, config, monkeypatch):
+    mirror = tmp_path / 'mirror'
+    config['storage'] = {'type': 'rclone', 'rclone_remote': 'r:b', 'base_dir': str(mirror),
+                         'remote_path_prefix': str(mirror), 'use_local_copy': True}
+    _, _, checks, _ = _run(tmp_path, config)
+    # the rclone probe itself fails without a server; the local-copy line is independent
+    c = checks['storage.local_copy']
+    assert c['status'] == 'PASS', c
+    assert str(mirror) in c['detail'] and 'pdrgrid' in c['detail']
+
+
+def test_local_copy_sftp_without_dir_warns(tmp_path, config):
+    config['storage'] = {'type': 'sftp', 'host': 'h', 'base_dir': '/server/dir',
+                         'use_local_copy': True}
+    _, _, checks, _ = _run(tmp_path, config)
+    assert checks['storage.local_copy']['status'] == 'WARN'
+    assert 'local_copy_dir' in checks['storage.local_copy']['detail']
+
+
+def test_local_copy_off_is_reported(tmp_path, config):
+    config['storage'] = {'type': 'rclone', 'rclone_remote': 'r:b', 'base_dir': str(tmp_path),
+                         'use_local_copy': False}
+    _, _, checks, _ = _run(tmp_path, config)
+    assert 'false' in checks['storage.local_copy']['detail']
+
+
+def test_pending_and_running_rows_of_the_model_are_counted(tmp_path, config):
+    config['pdr']['model_name'] = 'grid_x'
+    con = sqlite3.connect(config['database']['path'])
+    con.execute("insert into model_names (id, model_name, model_path) values (1, 'grid_x', '/p')")
+    con.execute("insert into model_names (id, model_name, model_path) values (2, 'other', '/q')")
+    for name, mid, status, pend in (('a', 1, 'pending', 1), ('b', 1, 'pending', 1),
+                                    ('c', 1, 'running', 0), ('d', 2, 'pending', 1)):
+        con.execute("insert into pdr_model_jobs (model_job_name, model_name_id, status, pending, "
+                    "time_of_start) values (?, ?, ?, ?, datetime('now'))", (name, mid, status, pend))
+    con.commit()
+    con.close()
+    _, _, checks, _ = _run(tmp_path, config)
+    c = checks['db.stale_jobs']
+    assert "model 'grid_x': pending=2, running=1" in c['detail']
+    assert c['status'] == 'WARN' and '--stale-after-hours' in c['detail']

@@ -2,12 +2,102 @@
 
 import os
 import logging
+import shutil
 from abc import ABC, abstractmethod
 from pdr_run.utils.logging import sanitize_config
 
 logger = logging.getLogger("dev")
 
+
+class LocalCopy:
+    """Local mirror of the files stored on a remote backend (rclone/sftp).
+
+    ``storage.use_local_copy``: after every successful (verified) upload the
+    stored file is also written under *root*, with the same relative key as on
+    the remote, i.e. the path below ``remote_path_prefix`` (else below
+    ``base_dir``). Files are copied exactly as stored (a ``.gz`` stays a
+    ``.gz``). The copy is atomic (``<name>.part``, then rename) and replaces an
+    older copy, so ``--rerun`` keeps it in sync. A failure is logged as a
+    WARNING and never fails the job.
+    """
+
+    def __init__(self, root, prefix=None, base_dir=None):
+        self.root = os.path.abspath(root)
+        self.prefix = prefix
+        self.base_dir = base_dir
+
+    def relative_key(self, remote_path):
+        """Key of *remote_path* relative to the prefix (``..`` is refused)."""
+        rel = str(remote_path).replace('\\', '/')
+        for strip in (self.prefix, self.base_dir):
+            strip = (strip or '').replace('\\', '/').rstrip('/')
+            if strip and (rel == strip or rel.startswith(strip + '/')):
+                rel = rel[len(strip):]
+                break
+        parts = [p for p in rel.split('/') if p not in ('', '.')]
+        if '..' in parts:
+            raise ValueError(f"'..' in path is not allowed: {remote_path!r}")
+        return '/'.join(parts)
+
+    def local_path(self, remote_path):
+        return os.path.join(self.root, self.relative_key(remote_path))
+
+    def store(self, local_path, remote_path):
+        """Copy *local_path* to its local-copy location; True on success,
+        False (WARNING logged) on any failure. Never raises."""
+        part = None
+        try:
+            dest = self.local_path(remote_path)
+            if os.path.abspath(local_path) == os.path.abspath(dest):
+                return True
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            part = dest + '.part'
+            shutil.copyfile(local_path, part)
+            os.replace(part, dest)
+            part = None
+            logger.info(f"Kept local copy {dest}")
+            return True
+        except Exception as exc:  # noqa: BLE001 - must never fail the job
+            logger.warning(f"Local copy of {remote_path} failed (job not affected): {exc}")
+            return False
+        finally:
+            if part and os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+
+
+def resolve_local_copy(storage_config, storage_type):
+    """The ``LocalCopy`` for a ``storage`` config section, or None.
+
+    None for ``local`` storage (the stored file is the local file), when
+    ``use_local_copy`` is false, or when no root can be determined. Root:
+    ``storage.local_copy_dir``; otherwise ``base_dir`` for rclone. For sftp,
+    ``base_dir`` is a path on the server, so ``local_copy_dir`` is required.
+    """
+    sc = storage_config or {}
+    if storage_type == 'local' or not sc.get('use_local_copy', True):
+        return None
+    root = sc.get('local_copy_dir')
+    if not root and storage_type == 'rclone':
+        root = sc.get('base_dir')
+    if not root:
+        return None
+    return LocalCopy(root, sc.get('remote_path_prefix'), sc.get('base_dir'))
+
+
 def get_storage_backend(config=None):
+    """Backend for *config*; remote backends carry ``.local_copy`` (see
+    ``LocalCopy``, None if disabled)."""
+    backend = _create_storage_backend(config)
+    sc = (config or {}).get('storage')
+    if sc:
+        backend.local_copy = resolve_local_copy(sc, sc.get('type', 'local'))
+    return backend
+
+
+def _create_storage_backend(config=None):
     """Get the appropriate storage backend based on configuration.
     
     Args:

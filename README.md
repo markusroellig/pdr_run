@@ -108,12 +108,12 @@ What is checked (`name` as shown in the report):
 
 | Group | Checks |
 |---|---|
-| Configuration | `config.file` (loaded? no `pdr:` section means the runner discards the file), `config.sections` (unknown sections abort a run), `config.env` (which `PDR_*` variables override the file, and which the code silently IGNORES because the file defines that section), `config.secrets` (password set/not set; values are never printed), `python.imports` |
+| Configuration | `config.file` (loaded? no `pdr:` section means the runner discards the file), `config.sections` (unknown sections abort a run), `config.model_params` (names the grid-axes key: `model_params` canonical, `model_parameters` accepted as alias, both = FAIL), `config.env` (which `PDR_*` variables override the file, and which the code silently IGNORES because the file defines that section), `config.secrets` (password set/not set; values are never printed), `python.imports` |
 | KOSMA-tau install | `kt.base_dir`, `kt.rundir_write` (probe file), `kt.exe.pdr/onion/getctrlind/mrt` (exist + executable), `kt.pdr_version` (`pdrexe --version`, `-dirty` is a WARN), `kt.input_dirs` (symlinks resolve) |
 | Templates and inputs | `tpl.json` (found, placeholders substituted as in a real job, parsed with json-fortran-style comments), `tpl.provenance` (config provenance is recorded; template sha256), `tpl.chem_network`, `tpl.binding_energies`, `tpl.fuv_file` (only if `ifuvtype` 5/6) |
 | Scratch and disk | `tmp.dir` (writable), `disk.free` (per filesystem, WARN below `--min-free-gb`) |
-| Storage | `storage` (local, sftp or rclone: write probe, read back, compare, delete; latency) |
-| Database | `db.connect` (+ server version), `db.tables`, `db.columns`, `db.additive_columns` (the 13 run-status / UV-continuum / config-provenance columns), `db.rows`, `db.stale_jobs`, `db.write_rollback` (INSERT rolled back) |
+| Storage | `storage` (local, sftp or rclone: write probe, read back, compare, delete; latency), `storage.local_copy` (rclone/sftp: root of the local copy, free space, example path) |
+| Database | `db.connect` (+ server version), `db.tables`, `db.columns`, `db.additive_columns` (the 13 run-status / UV-continuum / config-provenance columns), `db.rows`, `db.stale_jobs` (running/stale rows, and pending/running rows of this `pdr.model_name`), `db.write_rollback` (INSERT rolled back) |
 | Post-processing | `post.onion` (`ONION3.INP.<species>` for every species), `post.uv_continuum` (`kosma_h2` importable, data files), `post.simline` (driver, binary, molecules, config) |
 | Resources | `run.walltime` (WARN if `pdr.max_walltime_s` is unset), `run.workers` (workers, CPUs, RAM, MySQL `max_connections`) |
 
@@ -320,6 +320,29 @@ storage:
   # absolute local path components.
   remote_path_prefix: /path/to/trim/from/remote/destination
 ```
+
+#### Local copy of remote results (`use_local_copy`)
+
+For `rclone` and `sftp` storage, `storage.use_local_copy: true` (the default) also keeps every file after
+its upload succeeded (and was verified) under a local root, with the same relative key as on the remote:
+
+```yaml
+storage:
+  type: rclone
+  base_dir: /data/grid1_store              # model_path = base_dir/<model_name>
+  remote_path_prefix: /data/grid1_store    # stripped from the remote key
+  use_local_copy: true
+  local_copy_dir: null                     # default: base_dir (rclone); REQUIRED for sftp (base_dir is on the server)
+```
+
+- Relative key = the stored path below `remote_path_prefix` (else below `base_dir`). With `base_dir` equal to
+  `remote_path_prefix`, a file lands exactly at its model path, e.g.
+  `/data/grid1_store/<model_name>/pdrgrid/pdrstruct<model>.hdf5` for key `<model_name>/pdrgrid/...`.
+- Files are copied exactly as stored: a compressed `TEXTOUT_x.gz` is kept as `.gz`.
+- Written atomically (`<name>.part`, then rename). A failed copy logs a WARNING and never fails the job.
+- A recomputed node (`--rerun`) uploads again and replaces its local copy. A node that is skipped because it
+  exists remotely uploads nothing and leaves the local copy alone; `--rerun` is the way to refresh it.
+- `--check` shows the root, the free space and an example path (`storage.local_copy`).
 
 For an S3 server such as the Cologne one use `rclone_remote: kosmatau:<bucket>/<prefix>` (the bucket must
 already exist) and `compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]`; see
@@ -746,7 +769,7 @@ Job states: 12 finished, 1 not_converged, 1 aborted, 0 failed_storage
 
 Other errors that end the program before any job runs (unknown config section, failed `--check`) exit 1
 as before. The outcome per node is also in the database; the columns to look at are `status`, `active`,
-`pending`, `run_status_*`, `uvcont_*`, `postproc_error`, `time_of_start`, `time_of_finish`:
+`pending`, `execution_time` (wall time of `pdrexe` only: `time_of_finish - time_of_start`; NULL for skipped nodes), `run_status_*`, `uvcont_*`, `postproc_error`, `time_of_start`, `time_of_finish`:
 
 ```sql
 -- overview of a grid
@@ -798,6 +821,12 @@ pdr_run --reset-stale-jobs --stale-after-hours 12 --config my_config.yaml
   `time_of_start` older than the threshold. Rows with `time_of_start` NULL are never selected.
 - Threshold, in order: `--stale-after-hours` (hours); otherwise `1.5 * pdr.max_walltime_s`; otherwise
   `DEFAULT_STALE_AFTER_S` = 6 h. `--stale-after-hours` accepts fractions.
+- `--reset-stale-jobs` also resets rows that never started (`status = 'pending'`, `pending = 1`, `time_created`
+  older than the threshold): the queued rows a killed driver leaves behind. `--check` reports the pending and
+  running rows of the configured `pdr.model_name` (`db.stale_jobs`).
+- A driver killed a few minutes ago leaves rows younger than the default threshold (1.5 x `max_walltime_s`, else
+  6 h), which the reset skips. Give a smaller `--stale-after-hours` for them (`0` = every running/pending row),
+  only when no pdr_run of that database is running (`--dry-run` first).
 - `reset_stale_jobs()` only marks the rows (`reset_stale`, `active = false`, `pending = false`). It creates
   no replacement job and leaves the old row in place. The action runs and exits; no model is started.
 - Every grid run also calls `find_stale_jobs()` after creating its job entries and only logs a warning
@@ -1111,7 +1140,7 @@ uv_continuum:
 simline:
   enabled: false
 
-model_parameters:
+model_params:          # canonical key; 'model_parameters' is accepted as an alias (not both)
   metal: ["100"]
   dens: ["30", "40", "50"]
   mass: ["5", "6"]

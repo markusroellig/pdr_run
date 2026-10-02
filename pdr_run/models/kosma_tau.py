@@ -20,6 +20,7 @@ from pdr_run.io.file_manager import (
     create_dir, copy_dir, move_files, make_tarfile, get_digest
 )
 from pdr_run.database import get_db_manager
+from pdr_run.storage.base import LocalCopy
 from pdr_run.models.job_status import (
     determine_job_status, SUCCESS_STATUSES, COMPLETE_OUTPUT_STATUSES,
     POSTPROCESS_STATUSES, STATUS_SKIPPED, RUN_STATUS_FILE,
@@ -615,12 +616,18 @@ def _store(storage, local_path, remote_path):
     The storage backends signal a persisting failure after their retries
     either by returning False (SFTP/rclone) or by raising (local); both
     become False here so that callers can go on storing the remaining files
-    and report one ``failed_storage`` at the end.
+    and report one ``failed_storage`` at the end. After a successful store the
+    file is also kept under ``storage.local_copy_dir`` if configured
+    (``storage.base.LocalCopy``); that copy cannot fail the job.
     """
     try:
         if storage.store_file(local_path, remote_path) is False:
             logger.error(f"Storing {local_path} as {remote_path} failed after retries")
             return False
+        # storage.use_local_copy: mirror the verified upload (never fails the job)
+        local_copy = getattr(storage, 'local_copy', None)
+        if isinstance(local_copy, LocalCopy):
+            local_copy.store(local_path, remote_path)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.error(f"Storing {local_path} as {remote_path} failed: {exc}")
@@ -868,12 +875,17 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
                 logger.info('End of PDR Job: ' + now_end.strftime("%Y-%m-%d %H:%M:%S"))
 
                 job.time_of_finish = now_end
+                # execution_time = wall time of pdrexe (start of the process to
+                # the end of the wait/kill), not of the whole job (no onion,
+                # simline, uv continuum, upload).
+                job.execution_time = now_end - now_start
                 update_job_status(job_id, job.status, _session)
 
             except Exception as e:
                 logger.error(f"Unexpected error: {str(e)}", exc_info=True)
                 job.status = 'ERROR'
                 job.time_of_finish = datetime.datetime.now()
+                job.execution_time = job.time_of_finish - now_start
                 update_job_status(job_id, 'ERROR', _session)
                 raise
     finally:

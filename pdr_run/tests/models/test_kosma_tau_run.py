@@ -187,6 +187,28 @@ class TestRunPdrStatus:
         assert job.active is False
         assert job.pending is False
 
+    def test_execution_time_is_pdrexe_wall_time(self, pdr_workdir, make_job, db_session):
+        """execution_time = time_of_finish - time_of_start (pdrexe only)."""
+        job = make_job()
+        assert job.execution_time is None
+        proc = _fake_popen(returncode=0)
+        (pdr_workdir / 'pdroutput' / 'pdrstruct_s.hdf5').write_bytes(b'x')
+        with patch('pdr_run.models.kosma_tau.subprocess.Popen', return_value=proc):
+            kosma_tau.run_pdr(job.id, tmp_dir='.', session=db_session)
+
+        db_session.refresh(job)
+        assert job.execution_time is not None
+        assert job.execution_time == job.time_of_finish - job.time_of_start
+        assert job.execution_time.total_seconds() >= 0
+
+    def test_execution_time_is_set_for_failed_runs_too(self, pdr_workdir, make_job, db_session):
+        job = make_job()
+        proc = _fake_popen(returncode=1)
+        with patch('pdr_run.models.kosma_tau.subprocess.Popen', return_value=proc):
+            kosma_tau.run_pdr(job.id, tmp_dir='.', session=db_session)
+        db_session.refresh(job)
+        assert job.status == 'aborted' and job.execution_time is not None
+
     def test_uses_list_argv_not_shell_true(self, pdr_workdir, make_job, db_session):
         """The historical bug: shell=True means the process group we can
         kill is the shell, not pdrexe. Guard that we now launch pdrexe
