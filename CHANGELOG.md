@@ -6,7 +6,7 @@ Details and configuration of every item are in the [README](README.md); the comm
 ## [Unreleased] - branch `feature/preflight-check` (grid-1 production readiness, 2026-09-29 .. 2026-10-02)
 
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
-Deployed on halley at `461174a` (`d4fd3ec` still to deploy); rollback target `master` (`dc215a9`).
+Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Added
 
