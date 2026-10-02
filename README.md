@@ -1045,6 +1045,11 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
   RT-only re-runs of an existing grid possible. Without the flag, a skipped node is not processed.
 - Input: a working copy `pdroutput/pdrstruct<model>_simline.hdf5` of the model file; the pipeline writes to
   `simlineoutput/` (log: `TEXTOUT_SIMLINE`). The ONION results in `pdrgrid/` are not modified.
+- Concurrency: the pipeline writes `simline.obs` (per-model beam) and `simlineinp_<model>_<species>.*` into its
+  `simline_dir`. Each job therefore runs with its own `<job tmp dir>/simline_job/` that only symlinks `bin/`,
+  `molecules/` and `obs.template` from the configured `simline_dir` (passed to the pipeline through the per-job
+  config), so parallel workers never share a written file and the configured `simline_dir` (e.g. a frozen,
+  read-only base) is never written. The directory is removed with the job directory.
 - Output in storage: `<model_path>/simlinegrid/SIMLINE<model>.<file>` for every file in `simlineoutput/` and
   `<model_path>/simlinegrid/pdrstruct<model>_simline.hdf5`.
 - A non-zero exit of the pipeline is recorded as `SIMLINE: ...` in `postproc_error`; the status of the job

@@ -1433,8 +1433,20 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
             simline_dir, 'python', 'simline_config.json')
         with open(base_cfg_path) as f:
             cfg_text = f.read()
+        # The pipeline writes simline.obs (per-model beam) and
+        # simlineinp_<model>_<species>.* into its simline_dir. With parallel
+        # workers a shared directory is a race, so every job gets its own
+        # directory in which only the read-only installation parts are
+        # symlinked; nothing under the configured simline_dir is written.
+        job_simline_dir = os.path.join(workdir, 'simline_job')
+        os.makedirs(job_simline_dir, exist_ok=True)
+        for entry in ('bin', 'molecules', 'obs.template'):
+            link = os.path.join(job_simline_dir, entry)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.join(os.path.abspath(simline_dir), entry), link)
         cfg_text = re.sub(r'"simline_dir"\s*:\s*"[^"]*"',
-                          f'"simline_dir": "{simline_dir}"', cfg_text)
+                          lambda _m: f'"simline_dir": "{job_simline_dir}"', cfg_text)
         job_cfg_path = os.path.join(workdir, 'simline_config_job.json')
         with open(job_cfg_path, 'w') as f:
             f.write(cfg_text)

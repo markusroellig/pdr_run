@@ -704,3 +704,96 @@ class TestSkipStoredGz:
         with patch.object(kosma_tau, 'run_pdr', side_effect=_pdr_sets_status(order, 'finished')):
             kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={}, rerun=('all',))
         assert 'run_pdr' in order and 'copy_pdroutput' in order
+
+
+# ---------------------------------------------------------------------------
+# run_simline: per-job simline directory (no shared simline.obs)
+# ---------------------------------------------------------------------------
+
+_FAKE_SIMLINE_DRIVER = '''\
+import json, re, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+hdf5 = args[0]
+cfg = args[args.index('--config') + 1]
+text = Path(cfg).read_text()
+sdir = Path(re.search(r'"simline_dir"\\s*:\\s*"([^"]*)"', text).group(1))
+# the mocked "binary": per-model beam into simline.obs, then a window in which
+# a second worker sharing the directory would overwrite it
+tag = Path(hdf5).name
+obs = sdir / 'simline.obs'
+obs.write_text('beam ' + tag)
+assert (sdir / 'obs.template').is_file() and (sdir / 'bin' / 'simline').is_file()
+time.sleep(0.5)
+if obs.read_text() != 'beam ' + tag:
+    sys.exit(7)
+Path('simlineoutput').mkdir(exist_ok=True)
+Path('simlineoutput/obs_dir.txt').write_text(str(sdir))
+'''
+
+
+class TestRunSimlinePerJobDir:
+    def test_concurrent_jobs_get_distinct_obs_files(self, tmp_path, monkeypatch):
+        import threading
+
+        base = tmp_path / 'frozen_simline'
+        (base / 'python').mkdir(parents=True)
+        (base / 'bin').mkdir()
+        (base / 'bin' / 'simline').write_text('#!/bin/sh\n')
+        (base / 'molecules').mkdir()
+        (base / 'obs.template').write_text('beam KT_BEAM\n')
+        (base / 'python' / 'run_simline.py').write_text(_FAKE_SIMLINE_DRIVER)
+        (base / 'python' / 'simline_config.json').write_text(
+            '{"simline_dir": "../simline"}\n')
+        before = sorted(p.name for p in base.rglob('*'))
+
+        def make_job(name):
+            job = MagicMock()
+            job.model_job_name = name
+            job.model_name.model_path = 'm'
+            return job
+        jobs = {1: make_job('A'), 2: make_job('B')}
+        session = MagicMock()
+        session.get.side_effect = lambda _cls, jid: jobs[jid]
+
+        stored = {}
+        lock = threading.Lock()
+
+        def fake_store(_storage, src, remote, _patterns):
+            if src.endswith('obs_dir.txt'):
+                with lock:
+                    stored[src] = open(src).read()
+            return True
+        monkeypatch.setattr(kosma_tau, '_store_maybe_gz', fake_store)
+        monkeypatch.setattr(kosma_tau, '_store', lambda *a, **k: True)
+        monkeypatch.setattr('pdr_run.storage.base.get_storage_backend',
+                            lambda cfg: MagicMock())
+        monkeypatch.setattr(kosma_tau, 'retrieve_decompressed',
+                            lambda _s, _r, dst: open(dst, 'w').write('x'))
+
+        cfg = {'simline': {'simline_dir': str(base)}}
+        results, errors = {}, []
+
+        def worker(jid):
+            wd = tmp_path / f'job{jid}'
+            wd.mkdir()
+            try:
+                results[jid] = kosma_tau.run_simline(
+                    jid, tmp_dir=str(wd), config=cfg, session=session)
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(j,)) for j in jobs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        assert results == {1: True, 2: True}
+        dirs = sorted(stored.values())
+        assert len(dirs) == 2 and dirs[0] != dirs[1]
+        for d in dirs:
+            assert d.startswith(str(tmp_path / 'job'))   # inside the job dir
+        # nothing written in the shared installation
+        assert sorted(p.name for p in base.rglob('*')) == before
