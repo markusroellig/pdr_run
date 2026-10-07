@@ -554,6 +554,21 @@ class TestPostProcessingGating:
         assert 'SIMLINE: simline died' in reloaded.postproc_error
         assert 'copy_pdroutput' in orchestration_mocks
 
+    def test_simline_partial_failure_recorded_status_kept(
+            self, orchestration_mocks, make_job, db_session):
+        job = make_job(onion_species='')
+        job_id = job.id
+        partial = kosma_tau.SimlinePartialError(['C+', '13C+'], ['O [fits]'])
+        with patch.object(kosma_tau, 'run_pdr',
+                          side_effect=_pdr_sets_status(orchestration_mocks, 'finished')), \
+             patch.object(kosma_tau, 'run_simline', side_effect=partial):
+            kosma_tau.run_kosma_tau(job_id, tmp_dir='.', config={'simline': {'enabled': True}})
+        reloaded = _reload(db_session, job_id)
+        assert reloaded.status == 'finished'
+        assert reloaded.postproc_error == (
+            'SIMLINE: partial: failed species C+, 13C+; missing outputs O [fits]')
+        assert 'copy_pdroutput' in orchestration_mocks
+
     def test_postprocessing_storage_failure_gives_failed_storage_not_overwritten(
             self, orchestration_mocks, make_job, db_session):
         job = make_job(onion_species='CO')
@@ -729,6 +744,10 @@ if obs.read_text() != 'beam ' + tag:
     sys.exit(7)
 Path('simlineoutput').mkdir(exist_ok=True)
 Path('simlineoutput/obs_dir.txt').write_text(str(sdir))
+print('SUMMARY')                    # run_simline checks the driver's SUMMARY
+print('Total:      0')
+print('Successful: 0')
+print('Failed:     0')
 '''
 
 

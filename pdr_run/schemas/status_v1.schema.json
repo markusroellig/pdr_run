@@ -128,7 +128,9 @@
         "tsearch_flagged": {"type": "integer"}, "chem_relaxed": {"type": "integer"},
         "uvcont": {"type": "object", "properties": {"applied": {"type": "boolean"}, "closure_ok": {"type": "boolean"},
                                                     "error": {"type": "string"}}},
-        "postproc_error": {"type": "string"}
+        "postproc_error": {"type": "string"},
+        "simline_failed_species": {"type": "array", "items": {"type": "string"}},
+        "warn_reason": {"type": "string"}
       }
     }
   }

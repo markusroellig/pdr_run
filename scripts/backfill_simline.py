@@ -4,7 +4,8 @@ step failed.
 
 Selects the jobs of one model (``pdr.model_name`` of the config, or
 ``--model``) with status ``finished`` whose ``postproc_error`` contains a
-``SIMLINE: ...`` segment and re-runs pdr_run's own
+``SIMLINE: ...`` segment (including ``SIMLINE: partial: ...`` of a pipeline
+run that lost species) and re-runs pdr_run's own
 ``pdr_run.models.kosma_tau.run_simline`` for each of them, one at a time, in a
 fresh temporary directory. ``run_simline`` fetches the stored
 ``pdrgrid/pdrstruct<model>.hdf5`` from the configured storage, runs the
@@ -17,7 +18,8 @@ Database bookkeeping mirrors ``run_kosma_tau``:
 * success: the ``SIMLINE: ...`` segment is removed from ``postproc_error``
   (other segments, e.g. ``ONION ...``, are kept); an empty remainder becomes
   NULL, which is what a node whose post-processing succeeded carries;
-* the pipeline raises: the segment is replaced by ``SIMLINE: <new error>``;
+* the pipeline raises: the segment is replaced by ``SIMLINE: <new error>``
+  (a run that is still incomplete gives ``SIMLINE: partial: ...`` again);
 * storing a result file failed (``run_simline`` returns False): status
   ``failed_storage`` via ``_mark_failed_storage``, as in a grid run.
 

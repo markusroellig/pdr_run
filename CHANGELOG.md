@@ -10,6 +10,15 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Added
 
+- **SIMLINE partial failures are recorded** (maintainer decision 2026-10-07): `run_simline.py` exits 0 as soon
+  as one species succeeded, so 19 tier-0 nodes lost species silently (e.g. `Failed species: C+, 13C+, C, 13C`)
+  and 8 nodes lack O with no error. After an exit 0, `run_simline` now checks the driver's SUMMARY and, per
+  species, the FITS files in `simlineoutput/` and (with h5py) the SIMLINE-sourced `By species/<species>`
+  dataset of the working HDF5. An incomplete run is stored in full and recorded as `postproc_error`
+  `SIMLINE: partial: failed species ...; missing outputs ...` (job status unchanged; `backfill_simline.py`
+  picks it up through the unchanged `SIMLINE:` selector); full failure as before. `status --json`: class
+  `warn` plus `simline_failed_species` and `warn_reason` (schema extended, additive). Model results are not
+  affected (bookkeeping only). See [SIMLINE](README.md#simline).
 - **SIMLINE output bundling** `simline.bundle_outputs` (default `false`): the ~420 side files of a node's
   `simlineoutput/` are stored as ONE archive `simlinegrid/SIMLINE<model>.tar.gz` (flat members named as in the
   file-by-file layout) instead of one object each; `pdrstruct<model>_simline.hdf5` stays its own object. With

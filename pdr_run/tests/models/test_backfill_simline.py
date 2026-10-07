@@ -16,6 +16,7 @@ _spec.loader.exec_module(bf)
 
 OLD = ("SIMLINE: SIMLINE pipeline exited with 1 for job 7 "
        "(see simlineoutput/TEXTOUT_SIMLINE)")
+PARTIAL = "SIMLINE: partial: failed species C+, 13C+; missing outputs O [fits]"
 
 
 @pytest.mark.parametrize('text,new,expected', [
@@ -24,6 +25,8 @@ OLD = ("SIMLINE: SIMLINE pipeline exited with 1 for job 7 "
     ('ONION CO: x; ' + OLD, None, 'ONION CO: x'),
     ('ONION CO: a; b; ' + OLD, 'c', 'ONION CO: a; b; SIMLINE: c'),
     (None, None, None),
+    (PARTIAL, None, None),
+    ('ONION CO: x; ' + PARTIAL, 'partial: failed species C', 'ONION CO: x; SIMLINE: partial: failed species C'),
 ])
 def test_replace_simline_segment(text, new, expected):
     assert bf.replace_simline_segment(text, new) == expected
@@ -34,7 +37,8 @@ def test_select_jobs(db_session, make_job):
     make_job(status='not_converged', postproc_error=OLD)
     make_job(status='finished', postproc_error=None)
     make_job(status='finished', postproc_error='ONION CO: x')
-    assert [j.id for j in bf.select_jobs(db_session, 'testmodel')] == [a.id]
+    b = make_job(status='finished', postproc_error=PARTIAL)
+    assert [j.id for j in bf.select_jobs(db_session, 'testmodel')] == [a.id, b.id]
     assert bf.select_jobs(db_session, 'other') == []
 
 

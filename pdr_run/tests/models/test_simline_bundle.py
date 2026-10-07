@@ -17,7 +17,8 @@ MODEL = '100_40_-30_60_00'
 # what the fake pipeline writes into simlineoutput/ (run_simline adds TEXTOUT_SIMLINE)
 OUTPUTS = {f'jtemp_pdrstruct{MODEL}_simline_{sp}.smli': f'{sp} spectrum\n'.encode() * 50
            for sp in ('CO', '13CO', 'C+', 'O')}
-OUTPUTS.update({f'cube_{i:03d}.fits': bytes([i % 256]) * 2880 for i in range(20)})
+OUTPUTS.update({f'pdrstruct{MODEL}_simline_{sp}.{i}-{i - 1}.fits': bytes([i % 256]) * 2880
+                for sp in ('CO', '13CO', 'C+', 'O') for i in range(1, 6)})
 
 _FAKE_DRIVER = '''\
 import json, sys
@@ -26,7 +27,14 @@ out = Path('simlineoutput')
 out.mkdir(exist_ok=True)
 for name, data in json.loads(Path(sys.argv[0]).with_name('outputs.json').read_text()).items():
     (out / name).write_bytes(data.encode('latin-1'))
+print('Species:     CO, 13CO, C+, O')
 print('simline done')
+print('=' * 60)
+print('SUMMARY')
+print('=' * 60)
+print('Total:      4')
+print('Successful: 4')
+print('Failed:     0')
 '''
 
 

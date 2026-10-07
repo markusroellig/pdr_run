@@ -156,6 +156,42 @@ def test_node_state_is_latest_non_skipped(tmp_path):
     assert p['summary']['n_rows'] == 9
 
 
+def test_simline_partial_is_warn_with_species(tmp_path):
+    now = datetime.now()
+    t = dict(start=now - timedelta(hours=3), finish=now - timedelta(hours=2))
+    rows = [
+        dict(node='P', n=10, M=0, chi=0, status='finished', **t,
+             postproc_error='ONION CO: x; SIMLINE: partial: failed species C+, 13C+; '
+                            'missing outputs O [fits], O [hdf5]'),
+        dict(node='Q', n=20, M=0, chi=0, status='finished', **t,
+             postproc_error='SIMLINE: partial: no SUMMARY in TEXTOUT_SIMLINE'),
+        dict(node='R', n=30, M=0, chi=0, status='finished', **t,
+             postproc_error='SIMLINE: SIMLINE pipeline exited with 1 for job 3'),
+        dict(node='S', n=40, M=0, chi=0, status='aborted', **t,
+             postproc_error='SIMLINE: partial: failed species O'),
+    ]
+    db = tmp_path / 's.db'
+    make_db(db, rows)
+    p = run_status(db)
+    _validate(p)
+    st = {n['id']: n for n in p['nodes']}
+    assert st['P']['class'] == 'warn'
+    assert st['P']['simline_failed_species'] == ['C+', '13C+', 'O']
+    assert st['P']['warn_reason'] == 'SIMLINE partial: C+, 13C+, O missing'
+    assert st['Q']['simline_failed_species'] == []
+    assert st['Q']['warn_reason'] == 'SIMLINE partial: incomplete output'
+    assert 'simline_failed_species' not in st['R']
+    assert st['R']['class'] == 'warn' and st['R']['warn_reason'] == 'post-processing error'
+    assert st['S']['class'] == 'bad' and 'warn_reason' not in st['S']
+    assert st['S']['simline_failed_species'] == ['O']
+
+
+def test_simline_partial_parser():
+    assert status.simline_partial(None) is None
+    assert status.simline_partial('ONION CO: x') is None
+    assert status.simline_partial('SIMLINE: partial: failed species C; ONION CO: y') == ['C']
+
+
 # ---------------------------------------------------------- running / ETA
 
 def test_running_elapsed_and_cap(tmp_path):

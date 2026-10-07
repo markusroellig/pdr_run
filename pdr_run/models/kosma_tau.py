@@ -1444,6 +1444,134 @@ def fetch_simline_outputs(storage, model_path, model, dest_dir):
     return sorted(names)
 
 
+SIMLINE_BY_SPECIES = 'Integrated quantities/Intensities/By species'
+
+
+class SimlinePartialError(RuntimeError):
+    """The SIMLINE pipeline exited 0 but not every species produced its
+    outputs. Raised by ``run_simline`` after everything has been stored, so
+    ``run_kosma_tau`` records it as ``postproc_error`` segment
+    ``"SIMLINE: partial: ..."`` (picked up by backfill_simline.py) without
+    touching the job status."""
+
+    def __init__(self, failed_species, missing_outputs, note=None):
+        self.failed_species = list(failed_species)
+        self.missing_outputs = list(missing_outputs)
+        parts = []
+        if note:
+            parts.append(note)
+        if self.failed_species:
+            parts.append(f"failed species {', '.join(self.failed_species)}")
+        if self.missing_outputs:
+            parts.append(f"missing outputs {', '.join(self.missing_outputs)}")
+        super().__init__('partial: ' + '; '.join(parts))
+
+
+def parse_simline_textout(text):
+    """Species list and SUMMARY of a run_simline.py screen output.
+
+    Returns ``(species, summary)``: ``species`` is the list of the header line
+    ``Species:     CO, C+, ...`` (None if absent); ``summary`` is None if the
+    SUMMARY block is missing, else a dict with ``total``, ``successful``,
+    ``failed`` (ints or None) and ``failed_species`` (list).
+    """
+    species = None
+    m = re.search(r'^Species:[ \t]*(.*)$', text, re.MULTILINE)
+    if m:
+        species = [s.strip() for s in m.group(1).split(',') if s.strip()]
+    marks = list(re.finditer(r'^SUMMARY[ \t]*$', text, re.MULTILINE))
+    if not marks:
+        return species, None
+    tail = text[marks[-1].start():]
+
+    def _int(key):
+        mm = re.search(rf'^{key}:\s*(\d+)', tail, re.MULTILINE)
+        return int(mm.group(1)) if mm else None
+
+    mm = re.search(r'^Failed species:[ \t]*(.*)$', tail, re.MULTILINE)
+    failed_species = [s.strip() for s in mm.group(1).split(',') if s.strip()] if mm else []
+    return species, dict(total=_int('Total'), successful=_int('Successful'),
+                         failed=_int('Failed'), failed_species=failed_species)
+
+
+def _simline_hdf5_species(hdf5_path):
+    """Species with a SIMLINE-written ``By species`` dataset in *hdf5_path*
+    (``source`` attribute "SIMLINE"; ONION writes the same datasets with
+    source "ONION"). None if h5py is unavailable or the file is unreadable,
+    i.e. the check is skipped."""
+    try:
+        import h5py
+    except ImportError:
+        return None
+    try:
+        with h5py.File(hdf5_path, 'r') as f:
+            grp = f.get(SIMLINE_BY_SPECIES)
+            if grp is None:
+                return set()
+            found = set()
+            for name, ds in grp.items():
+                src = ds.attrs.get('source', b'')
+                if isinstance(src, bytes):
+                    src = src.decode('utf-8', 'replace')
+                if str(src).strip() == 'SIMLINE':
+                    found.add(name)
+            return found
+    except OSError as exc:
+        logger.warning(f"SIMLINE output check: cannot read {hdf5_path} ({exc}); "
+                       "HDF5 check skipped")
+        return None
+
+
+def check_simline_outputs(textout_path, simline_out, workfile, species=None):
+    """Verify a SIMLINE pipeline run that exited 0.
+
+    Signals, in this order:
+
+    1. the SUMMARY of run_simline.py in TEXTOUT_SIMLINE: ``Failed species:``
+       (the driver exits 0 as soon as one species succeeded);
+    2. for every species not listed as failed (species list from the driver's
+       ``Species:`` header, else *species*): at least one FITS file
+       ``<workfile stem>_<species>.<transition>.fits`` in *simline_out* (what
+       fits_io.collect_species_results reads), and - if h5py is available -
+       a ``By species/<species>`` dataset with source "SIMLINE" in *workfile*
+       (what the grid collectors read).
+
+    Returns ``(failed_species, missing_outputs, note)``; all empty/None means
+    complete.
+    """
+    try:
+        with open(textout_path, errors='replace') as fh:
+            text = fh.read()
+    except OSError:
+        text = ''
+    listed, summary = parse_simline_textout(text)
+    note = None
+    if summary is None:
+        note = 'no SUMMARY in TEXTOUT_SIMLINE'
+        failed = []
+    else:
+        failed = summary['failed_species']
+        if summary['failed'] and not failed:
+            note = f"{summary['failed']} species failed (names not reported)"
+    expected = listed or list(species or [])
+    stem = os.path.splitext(os.path.basename(workfile))[0]
+    try:
+        files = os.listdir(simline_out)
+    except OSError:
+        files = []
+    in_hdf5 = _simline_hdf5_species(workfile)
+    missing = []
+    for sp in expected:
+        if sp in failed:
+            continue
+        pat = re.compile(re.escape(f'{stem}_{sp}') + r'\..*\.fits$')
+        if not any(pat.match(f) for f in files):
+            missing.append(f'{sp} [fits]')
+        if in_hdf5 is not None and sp not in in_hdf5:
+            missing.append(f'{sp} [hdf5]')
+    return failed, missing, note
+
+
 def run_simline(job_id, tmp_dir='./', config=None, session=None):
     """Run SIMLINE radiative-transfer post-processing for a job.
 
@@ -1474,7 +1602,12 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
     pdrgrid/ remain untouched.
 
     Returns False if storing a result file failed after all retries; raises
-    if the pipeline itself fails.
+    if the pipeline itself fails. The driver exits 0 as soon as one species
+    succeeded, so after an exit 0 ``check_simline_outputs`` verifies the
+    SUMMARY and the per-species outputs; for an incomplete run everything is
+    still stored and then ``SimlinePartialError`` is raised (recorded by
+    ``run_kosma_tau`` as ``"SIMLINE: partial: failed species ...; missing
+    outputs ..."``, job status unchanged).
     """
     import sys as _sys
 
@@ -1556,8 +1689,12 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
             raise RuntimeError(
                 f"SIMLINE pipeline exited with {proc.returncode} for job {job_id} "
                 f"(see simlineoutput/TEXTOUT_SIMLINE)")
+        # exit 0 also for a partial run: check species and outputs
+        failed_species, missing_outputs, note = check_simline_outputs(
+            os.path.join(simline_out, 'TEXTOUT_SIMLINE'), simline_out, workfile,
+            species or simline_cfg.get('species'))
 
-        # --- store results under simlinegrid/
+        # --- store results under simlinegrid/ (also for a partial run)
         grid_dir = os.path.join(model_path, 'simlinegrid')
         fnames = [f for f in sorted(os.listdir(simline_out))
                   if os.path.isfile(os.path.join(simline_out, f))]
@@ -1590,6 +1727,13 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
                 f"Stored SIMLINE-augmented HDF5 and {stored} output file(s)"
                 f"{' (one archive)' if simline_cfg.get('bundle_outputs', False) else ''} "
                 f"under simlinegrid/ for job {job_id}")
+        if failed_species or missing_outputs or note:
+            partial = SimlinePartialError(failed_species, missing_outputs, note)
+            if not ok:
+                # failed_storage (set by the caller) takes precedence
+                logger.error(f"SIMLINE {partial} (job {job_id})")
+                return ok
+            raise partial
         return ok
     finally:
         if session_created_locally:

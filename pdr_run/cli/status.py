@@ -64,6 +64,11 @@ _RE_AV = re.compile(r'AV\s*=\s*([\d.eE+-]+)')
 _RE_TEMP = re.compile(r'T\(gas\):\s*([\d.eE+-]+)')
 _RE_BRENT = re.compile(r'brent', re.IGNORECASE)
 _RE_MAXIT = re.compile(r'MAXIT', re.IGNORECASE)
+# run_simline's partial-failure segment of postproc_error:
+# "SIMLINE: partial: failed species C+, 13C; missing outputs O [fits], O [hdf5]"
+_RE_SIMLINE_PARTIAL = re.compile(r'SIMLINE: partial: (.*?)(?:; (?:SIMLINE:|ONION )|$)')
+_RE_SIMLINE_FAILED = re.compile(r'failed species ([^;]*)')
+_RE_SIMLINE_MISSING = re.compile(r'missing outputs ([^;]*)')
 
 
 class StatusError(Exception):
@@ -325,6 +330,25 @@ def build_axes(latest, registry):
     return axes, node_idx
 
 
+def simline_partial(postproc_error):
+    """Species of a partial SIMLINE run recorded in *postproc_error*
+    (``run_simline``'s ``SimlinePartialError``): failed species plus species
+    with missing outputs, in order, without duplicates; None if the text has
+    no ``SIMLINE: partial:`` segment."""
+    m = _RE_SIMLINE_PARTIAL.search(postproc_error or '')
+    if not m:
+        return None
+    seg, species = m.group(1), []
+    for rx in (_RE_SIMLINE_FAILED, _RE_SIMLINE_MISSING):
+        mm = rx.search(seg)
+        if mm:
+            for item in mm.group(1).split(','):
+                sp = item.split(' [')[0].strip()
+                if sp and sp not in species:
+                    species.append(sp)
+    return species
+
+
 def node_entry(node, row, nreruns, idx, now, classes):
     st = row.get('status') or 'pending'
     t0, t1 = row.get('time_of_start'), row.get('time_of_finish')
@@ -355,6 +379,13 @@ def node_entry(node, row, nreruns, idx, now, classes):
         e['uvcont'] = uv
     if pp:
         e['postproc_error'] = str(pp)[:POSTPROC_TEXT_MAX]
+        lost = simline_partial(str(pp))
+        if lost is not None:
+            e['simline_failed_species'] = lost
+        if cls == 'warn':
+            e['warn_reason'] = ('post-processing error' if lost is None else
+                                f"SIMLINE partial: {', '.join(lost)} missing" if lost else
+                                'SIMLINE partial: incomplete output')
     return e
 
 

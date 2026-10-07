@@ -199,7 +199,9 @@ created). After updating an existing installation, re-run `pip install -e .` so 
 Node state is the latest non-`skipped` job row of the node (the `--rerun` rule); a node
 with only skipped rows keeps its skipped row. Classes: `ok` (finished, skipped), `warn`
 (finished_relaxed, flagged, or a post-processing error), `bad` (not_converged, aborted,
-timeout, failed_storage, ...), `run`, `pending`. Axes are read from the parameter columns
+timeout, failed_storage, ...), `run`, `pending`. A node with `postproc_error` carries `warn_reason`
+(if its class is `warn`; `"post-processing error"` or `"SIMLINE partial: <species> missing"`) and, for a
+partial SIMLINE run, `simline_failed_species`. Axes are read from the parameter columns
 (log10 of `xnsur`, `mass`, `sint`; `zmetal` only if it varies) and each node carries its
 index into the axis values. `eta_inputs` holds the run-time samples (timeouts censored at
 the cap), the queue and the worker count for the dashboard's own ETA; `summary.eta` is a
@@ -1164,7 +1166,20 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
     else the single files, `.gz` decompressed) and returns their names, so a grid with old-layout and bundled
     nodes reads uniformly. If a node has both (re-run with a different setting), the archive wins.
 - A non-zero exit of the pipeline is recorded as `SIMLINE: ...` in `postproc_error`; the status of the job
-  stays and `copy_pdroutput` still stores the model files. `pdr_run --check` verifies driver, binary,
+  stays and `copy_pdroutput` still stores the model files.
+- Partial runs: `run_simline.py` exits 0 as soon as ONE species succeeded. After an exit 0, `run_simline`
+  therefore checks (`kosma_tau.check_simline_outputs`) the driver's `SUMMARY` in `TEXTOUT_SIMLINE`
+  (`Failed species: ...`; a missing SUMMARY counts as incomplete) and, for every species of the driver's
+  `Species:` header (else `simline.species`) not listed as failed, the expected outputs: at least one FITS
+  `pdrstruct<model>_simline_<species>.<transition>.fits` in `simlineoutput/` and, if `h5py` is importable and
+  the working copy is readable, a dataset `Integrated quantities/Intensities/By species/<species>` with
+  attribute `source = "SIMLINE"` (ONION's datasets of the same name carry `ONION`). An incomplete run is stored
+  in full and then recorded as
+  `SIMLINE: partial: failed species C+, 13C+; missing outputs O [fits], O [hdf5]` in `postproc_error`; the job
+  status stays (the model is fine). `scripts/backfill_simline.py` selects these nodes like any other
+  `SIMLINE:` segment. If storing also failed, `failed_storage` takes precedence and the partial result is only
+  logged. In `pdr_run status --json` such a node is class `warn` with `simline_failed_species` (failed plus
+  missing-output species) and `warn_reason` (`"SIMLINE partial: C+, 13C+, O missing"`). `pdr_run --check` verifies driver, binary,
   `obs.template`, `molecules/` and the config (`post.simline`), and names the side-file layout.
 
 ## Production Grid Run
