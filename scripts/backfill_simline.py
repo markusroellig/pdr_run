@@ -9,6 +9,8 @@ Selects the jobs of one model (``pdr.model_name`` of the config, or
 fresh temporary directory. ``run_simline`` fetches the stored
 ``pdrgrid/pdrstruct<model>.hdf5`` from the configured storage, runs the
 pipeline and stores ``simlinegrid/...`` exactly as during a grid run.
+(With ``simline.bundle_outputs: true`` in the config the side files go into one
+archive ``simlinegrid/SIMLINE<model>.tar.gz``, as in the grid run.)
 
 Database bookkeeping mirrors ``run_kosma_tau``:
 

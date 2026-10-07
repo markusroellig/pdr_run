@@ -325,7 +325,8 @@ VALID_CONFIG_STRUCTURE = {
     # missing from VALID_CONFIG_STRUCTURE since it was introduced (4246aca),
     # so a config.yaml with a top-level 'simline:' section would previously
     # abort validation - added here together with 'uv_continuum' below.
-    'simline': {'enabled', 'species', 'simline_dir', 'config_file', 'timeout'},
+    'simline': {'enabled', 'species', 'simline_dir', 'config_file', 'timeout',
+                'bundle_outputs'},
     'uv_continuum': set(UV_CONTINUUM_CONFIG.keys()),
 }
 

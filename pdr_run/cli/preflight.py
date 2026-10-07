@@ -1258,7 +1258,9 @@ def check_simline(ctx: Ctx):
             json.loads(strip_json_comments(fh.read(), bang=True))
         except json.JSONDecodeError as exc:
             _fail(f"{cfgfile}: line {exc.lineno}: {exc.msg}")
-    return PASS, f"{simdir}: driver, binary, obs.template, molecules/, config OK"
+    layout = ("side files bundled as SIMLINE<model>.tar.gz" if cfg.get('bundle_outputs', False)
+              else "side files stored one by one (simline.bundle_outputs false)")
+    return PASS, f"{simdir}: driver, binary, obs.template, molecules/, config OK; {layout}"
 
 
 # --------------------------------------------------- 8. wall time & resources

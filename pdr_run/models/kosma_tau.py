@@ -1365,6 +1365,85 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
             logger.debug(f"copy_onionoutput: Closed local session for job {job_id}")
 
 
+SIMLINE_BUNDLE_SUFFIX = '.tar.gz'
+
+
+def simline_bundle_name(model):
+    """Stored name of the SIMLINE side-file archive of *model*
+    (``simline.bundle_outputs``)."""
+    return f'SIMLINE{model}{SIMLINE_BUNDLE_SUFFIX}'
+
+
+def make_simline_bundle(archive, src_dir, fnames, model):
+    """Write the files *fnames* of *src_dir* into the gzipped tar *archive*,
+    flat, as members ``SIMLINE<model>.<fname>`` - the names they have in the
+    file-by-file layout, so extracting the archive into simlinegrid/ gives
+    exactly that layout. *archive* is removed if writing fails."""
+    import tarfile
+    try:
+        with tarfile.open(archive, 'w:gz') as tar:
+            for fname in fnames:
+                tar.add(os.path.join(src_dir, fname), arcname=f'SIMLINE{model}.{fname}',
+                        recursive=False)
+    except BaseException:
+        if os.path.exists(archive):
+            os.remove(archive)
+        raise
+
+
+def fetch_simline_outputs(storage, model_path, model, dest_dir):
+    """Retrieve the SIMLINE side files of one node into *dest_dir*, from
+    either storage layout of ``run_simline``: the archive
+    ``simlinegrid/SIMLINE<model>.tar.gz`` (``simline.bundle_outputs``) if it
+    exists, else the single files ``simlinegrid/SIMLINE<model>.*`` (files
+    stored as ``.gz`` by ``storage.compress_files`` are decompressed). Both
+    give the same plain files ``SIMLINE<model>.<fname>``; the sorted list of
+    their names is returned. The SIMLINE HDF5 ``pdrstruct<model>_simline.hdf5``
+    is a separate object and not part of this."""
+    import tarfile
+    grid_dir = os.path.join(model_path, 'simlinegrid')
+    bundle_name = simline_bundle_name(model)
+    prefix = f'SIMLINE{model}.'
+    os.makedirs(dest_dir, exist_ok=True)
+    if _storage_has(storage, os.path.join(grid_dir, bundle_name)):
+        part = os.path.join(dest_dir, bundle_name + '.part')
+        names = []
+        try:
+            storage.retrieve_file(os.path.join(grid_dir, bundle_name), part)
+            with tarfile.open(part, 'r:gz') as tar:
+                for member in tar:
+                    # flat regular files with the node's prefix only (no paths)
+                    if not (member.isfile() and member.name.startswith(prefix)
+                            and os.path.basename(member.name) == member.name):
+                        raise ValueError(f"unexpected member {member.name!r} in {bundle_name}")
+                    with tar.extractfile(member) as fin, \
+                            open(os.path.join(dest_dir, member.name), 'wb') as fout:
+                        shutil.copyfileobj(fin, fout, 1024 * 1024)
+                    names.append(member.name)
+        finally:
+            if os.path.exists(part):
+                os.remove(part)
+        return sorted(names)
+    names = []
+    for name in storage.list_files(grid_dir):
+        if not name.startswith(prefix) or name == bundle_name:
+            continue
+        if name.endswith(GZ_SUFFIX):
+            plain = name[:-len(GZ_SUFFIX)]
+            part = os.path.join(dest_dir, name + '.part')
+            try:
+                storage.retrieve_file(os.path.join(grid_dir, name), part)
+                gunzip_file(part, os.path.join(dest_dir, plain))
+            finally:
+                if os.path.exists(part):
+                    os.remove(part)
+        else:
+            plain = name
+            storage.retrieve_file(os.path.join(grid_dir, name), os.path.join(dest_dir, name))
+        names.append(plain)
+    return sorted(names)
+
+
 def run_simline(job_id, tmp_dir='./', config=None, session=None):
     """Run SIMLINE radiative-transfer post-processing for a job.
 
@@ -1378,7 +1457,16 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         'simline_dir': str   (optional; default <pdr base_dir>/simline),
         'config_file': str   (optional pipeline config JSON),
         'timeout':     int   (seconds, default 3600),
+        'bundle_outputs': bool (default False; see below),
     }
+
+    Storage layout under simlinegrid/: the SIMLINE-augmented HDF5 is always
+    its own object ``pdrstruct<model>_simline.hdf5`` (read by the grid
+    collectors). The ~420 side files of simlineoutput/ (FITS, ASCII,
+    TEXTOUT_SIMLINE) are stored one by one as ``SIMLINE<model>.<file>``
+    (default), or with ``bundle_outputs: true`` as ONE archive
+    ``SIMLINE<model>.tar.gz`` whose members carry exactly these names, i.e.
+    one upload instead of ~420. ``fetch_simline_outputs`` reads both layouts.
 
     Unlike ONION, which modifies the grid pdrstruct in place, SIMLINE
     results are written into a separate working copy that is stored under
@@ -1470,22 +1558,37 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
                 f"(see simlineoutput/TEXTOUT_SIMLINE)")
 
         # --- store results under simlinegrid/
+        grid_dir = os.path.join(model_path, 'simlinegrid')
+        fnames = [f for f in sorted(os.listdir(simline_out))
+                  if os.path.isfile(os.path.join(simline_out, f))]
         stored = 0
         ok = True
-        for fname in sorted(os.listdir(simline_out)):
-            src = os.path.join(simline_out, fname)
-            if os.path.isfile(src):
-                if _store_maybe_gz(storage, src, os.path.join(
-                        model_path, 'simlinegrid', f'SIMLINE{model}.{fname}'),
-                        compress_patterns(config)):
+        if simline_cfg.get('bundle_outputs', False):
+            # one archive instead of one upload per file (rclone S3: ~2.5 s
+            # per object, ~420 objects per node)
+            bundle = os.path.join(workdir, simline_bundle_name(model))
+            make_simline_bundle(bundle, simline_out, fnames, model)
+            try:
+                if _store(storage, bundle, os.path.join(grid_dir, os.path.basename(bundle))):
+                    stored = len(fnames)
+                else:
+                    ok = False
+            finally:
+                os.remove(bundle)
+        else:
+            for fname in fnames:
+                if _store_maybe_gz(storage, os.path.join(simline_out, fname),
+                                   os.path.join(grid_dir, f'SIMLINE{model}.{fname}'),
+                                   compress_patterns(config)):
                     stored += 1
                 else:
                     ok = False
         ok &= _store(storage, workfile, os.path.join(
-            model_path, 'simlinegrid', f'pdrstruct{model}_simline.hdf5'))
+            grid_dir, f'pdrstruct{model}_simline.hdf5'))
         if ok:
             logger.info(
-                f"Stored SIMLINE-augmented HDF5 and {stored} output file(s) "
+                f"Stored SIMLINE-augmented HDF5 and {stored} output file(s)"
+                f"{' (one archive)' if simline_cfg.get('bundle_outputs', False) else ''} "
                 f"under simlinegrid/ for job {job_id}")
         return ok
     finally:

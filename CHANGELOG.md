@@ -10,6 +10,14 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Added
 
+- **SIMLINE output bundling** `simline.bundle_outputs` (default `false`): the ~420 side files of a node's
+  `simlineoutput/` are stored as ONE archive `simlinegrid/SIMLINE<model>.tar.gz` (flat members named as in the
+  file-by-file layout) instead of one object each; `pdrstruct<model>_simline.hdf5` stays its own object. With
+  rclone/S3 (~2.5 s per object) the SIMLINE storage of a node drops from ~15-20 min to seconds (one real tier-0
+  node: 419 files, 26.4 MB -> 11.0 MB archive, tar 0.54 s). New reader `kosma_tau.fetch_simline_outputs` returns
+  the same plain files from either layout (mixed grids); `backfill_simline.py` follows the config; `--check`
+  (`post.simline`) names the layout; key added to the config validation. Default false keeps the stored layout
+  of existing configs unchanged; the grid config opts in. See [SIMLINE](README.md#simline).
 - **SIMLINE backfill** `scripts/backfill_simline.py`: re-runs `run_simline` sequentially (optional `--nice`)
   for `finished` jobs of a model whose `postproc_error` has a `SIMLINE:` segment; on success the segment is
   removed (NULL if nothing remains), on a new failure it is replaced, a storage failure gives `failed_storage`

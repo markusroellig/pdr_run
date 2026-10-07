@@ -1130,6 +1130,7 @@ simline:
   simline_dir: /path/to/kosma-tau/simline   # default: <pdr.base_dir>/simline
   config_file: /path/to/simline_config.json # default: <simline_dir>/python/simline_config.json
   timeout: 3600              # seconds (default)
+  bundle_outputs: false      # true: side files as ONE archive SIMLINE<model>.tar.gz (default false)
 ```
 
 ```bash
@@ -1146,11 +1147,25 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
   `molecules/` and `obs.template` from the configured `simline_dir` (passed to the pipeline through the per-job
   config), so parallel workers never share a written file and the configured `simline_dir` (e.g. a frozen,
   read-only base) is never written. The directory is removed with the job directory.
-- Output in storage: `<model_path>/simlinegrid/SIMLINE<model>.<file>` for every file in `simlineoutput/` and
-  `<model_path>/simlinegrid/pdrstruct<model>_simline.hdf5`.
+- Output in storage: `<model_path>/simlinegrid/pdrstruct<model>_simline.hdf5` (always its own object; the grid
+  collectors such as `simline/python/collect_grid_results.py` read only this file) plus the ~420 side files of
+  `simlineoutput/` (FITS cubes, ASCII spectra, `TEXTOUT_SIMLINE`) in one of two layouts:
+  - `bundle_outputs: false` (default): one object per file, `simlinegrid/SIMLINE<model>.<file>`
+    (`storage.compress_files` applies per file, e.g. `TEXTOUT_SIMLINE.gz`).
+  - `bundle_outputs: true`: ONE gzipped tar `simlinegrid/SIMLINE<model>.tar.gz` whose flat members have exactly
+    the names of the file-by-file layout (`SIMLINE<model>.<file>`, `TEXTOUT_SIMLINE` uncompressed inside), so
+    `tar -xzf SIMLINE<model>.tar.gz` in `simlinegrid/` reproduces the old layout. One upload instead of ~420:
+    with rclone/S3 (~2.5 s per object incl. delete-before-overwrite and MD5 verify) this cuts the SIMLINE
+    storage time of a node from ~15-20 min to a few seconds. The local copy (`use_local_copy`) holds the
+    archive as stored. `scripts/backfill_simline.py` calls `run_simline` with the grid config and therefore
+    uses the same layout.
+  - Reading either layout: `pdr_run.models.kosma_tau.fetch_simline_outputs(storage, model_path, model, dest_dir)`
+    retrieves the side files of one node into `dest_dir` as plain `SIMLINE<model>.<file>` (archive if present,
+    else the single files, `.gz` decompressed) and returns their names, so a grid with old-layout and bundled
+    nodes reads uniformly. If a node has both (re-run with a different setting), the archive wins.
 - A non-zero exit of the pipeline is recorded as `SIMLINE: ...` in `postproc_error`; the status of the job
   stays and `copy_pdroutput` still stores the model files. `pdr_run --check` verifies driver, binary,
-  `obs.template`, `molecules/` and the config (`post.simline`).
+  `obs.template`, `molecules/` and the config (`post.simline`), and names the side-file layout.
 
 ## Production Grid Run
 
