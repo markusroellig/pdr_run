@@ -42,6 +42,20 @@ def test_select_jobs(db_session, make_job):
     assert bf.select_jobs(db_session, 'other') == []
 
 
+def test_select_jobs_rerun_ok(db_session, make_job):
+    a = make_job(status='finished', postproc_error=None)
+    b = make_job(status='finished', postproc_error='ONION CO: x')
+    c = make_job(status='not_converged', postproc_error=None)
+    d = make_job(status='finished', postproc_error=OLD)
+    ids = [a.id, b.id, c.id, d.id]
+    assert [j.id for j in bf.select_jobs(db_session, 'testmodel', ids)] == [d.id]
+    assert [j.id for j in bf.select_jobs(db_session, 'testmodel', ids, rerun_ok=True)] == [a.id, b.id, d.id]
+    with pytest.raises(ValueError):
+        bf.select_jobs(db_session, 'testmodel', rerun_ok=True)
+    with pytest.raises(SystemExit):
+        bf.main(['--config', 'x.yaml', '--rerun-ok'])
+
+
 @pytest.mark.parametrize('ret,exc,result,pp,status', [
     (True, None, 'ok', None, 'finished'),
     (None, RuntimeError('again'), 'failed', 'SIMLINE: again', 'finished'),

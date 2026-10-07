@@ -27,6 +27,7 @@ Usage (on the grid host, credentials from the environment / config):
 
     python scripts/backfill_simline.py --config configs/grid1_tier0.yaml --dry-run
     python scripts/backfill_simline.py --config configs/grid1_tier0.yaml --job-ids 403
+    python scripts/backfill_simline.py --config configs/grid1_tier0.yaml --job-ids 570 628 --rerun-ok
     python scripts/backfill_simline.py --config configs/grid1_tier0.yaml --nice 19
 """
 
@@ -75,15 +76,23 @@ def replace_simline_segment(postproc_error, new_error=None):
     return SEGMENT_SEP.join(kept) if kept else None
 
 
-def select_jobs(session, model_name, job_ids=None, limit=None):
-    """Finished jobs of *model_name* with a SIMLINE post-processing error."""
+def select_jobs(session, model_name, job_ids=None, limit=None, rerun_ok=False):
+    """Finished jobs of *model_name* with a SIMLINE post-processing error.
+
+    With *rerun_ok* (only together with *job_ids*) the listed finished jobs
+    are selected whatever their ``postproc_error``: nodes whose SIMLINE run
+    lost species before partial failures were recorded, or whose SIMLINE
+    step was interrupted by a driver stop."""
     from pdr_run.database.models import ModelNames, PDRModelJob
 
+    if rerun_ok and not job_ids:
+        raise ValueError('rerun_ok requires explicit job_ids')
     q = (session.query(PDRModelJob)
          .join(ModelNames, PDRModelJob.model_name_id == ModelNames.id)
          .filter(ModelNames.model_name == model_name,
-                 PDRModelJob.status == 'finished',
-                 PDRModelJob.postproc_error.like('%SIMLINE:%')))
+                 PDRModelJob.status == 'finished'))
+    if not rerun_ok:
+        q = q.filter(PDRModelJob.postproc_error.like('%SIMLINE:%'))
     if job_ids:
         q = q.filter(PDRModelJob.id.in_(job_ids))
     q = q.order_by(PDRModelJob.id)
@@ -132,12 +141,17 @@ def main(argv=None):
     p.add_argument('--config', required=True, help='pdr_run YAML config of the grid')
     p.add_argument('--model', help='model name (default: pdr.model_name of the config)')
     p.add_argument('--job-ids', type=int, nargs='+', help='restrict to these job IDs')
+    p.add_argument('--rerun-ok', action='store_true',
+                   help='with --job-ids: also re-run listed finished jobs without a SIMLINE error '
+                        '(partial runs recorded as ok, or SIMLINE interrupted by a driver stop)')
     p.add_argument('--limit', type=int, help='process at most N jobs')
     p.add_argument('--dry-run', action='store_true', help='list the selected jobs only')
     p.add_argument('--nice', type=int, default=0, help='niceness increment (e.g. 19)')
     p.add_argument('--fail-dir', help='keep TEXTOUT_SIMLINE of failed jobs here')
     p.add_argument('--tmp-root', help='parent directory of the per-job temp dirs')
     args = p.parse_args(argv)
+    if args.rerun_ok and not args.job_ids:
+        p.error('--rerun-ok requires --job-ids')
 
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(name)s: %(message)s')
@@ -151,7 +165,7 @@ def main(argv=None):
     from pdr_run.database.db_manager import get_db_manager
     session = get_db_manager(config.get('database')).get_session()
     try:
-        jobs = select_jobs(session, model_name, args.job_ids, args.limit)
+        jobs = select_jobs(session, model_name, args.job_ids, args.limit, args.rerun_ok)
         logger.info(f"{len(jobs)} job(s) of model {model_name} selected")
         if args.dry_run:
             for job in jobs:

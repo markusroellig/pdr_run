@@ -31,7 +31,9 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
   for `finished` jobs of a model whose `postproc_error` has a `SIMLINE:` segment; on success the segment is
   removed (NULL if nothing remains), on a new failure it is replaced, a storage failure gives `failed_storage`
   as in a grid run. Options `--dry-run`, `--limit`, `--job-ids`, `--fail-dir`. Used for the grid-1 tier-0 nodes
-  whose SIMLINE failed before the `tools/config_utils.py` fix of 2026-10-04.
+  whose SIMLINE failed before the `tools/config_utils.py` fix of 2026-10-04. `--rerun-ok` (only with `--job-ids`)
+  also re-runs listed finished jobs without a `SIMLINE:` segment: nodes whose partial SIMLINE run was recorded as
+  ok before partial failures were flagged, and nodes whose SIMLINE step was cut off by a driver stop.
 - **Preflight check** `pdr_run --check` (`10a5673`): reports READY / NOT READY for a production run without
   starting a model. Checks the config file and sections, environment overrides, secrets (set/not set, never
   printed), the KOSMA-tau install (`pdrexe --version`, `-dirty` = WARN), the rendered template, chemical
