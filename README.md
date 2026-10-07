@@ -1029,7 +1029,20 @@ rclone backend (the files are not written through a mount). `remote_path_prefix`
   and retried (2 s, 4 s, 8 s backoff, `rclone_max_retries`); it can never block a worker forever. rclone's own
   retries are set to 1 so that the pdr_run retry (which restarts delete + upload + verify) is the only one.
   Permanent errors (`AccessDenied`, bad key, `NoSuchBucket`, exit status 7, key too long) are not retried.
-- **Existence checks** use one `lsf` per candidate name; `lsf` exits 0 with empty output for a missing file in an
+- **rclone binary and single-object lookups.** `rclone_binary` (default `rclone`, i.e. the one on `PATH`; `~` is
+  expanded) selects the executable for every call, so a newer rclone can be used without replacing the system
+  one, e.g. `rclone_binary: ~/bin/rclone-v1.75.1`. Its version is read once (`rclone version`). With rclone
+  >= 1.57 every single-object lookup (overwrite check before an upload, verification after it, download size,
+  existence check) is one `lsjson --stat [--hash] <key>`, which is one HEAD request on S3. Older rclone has no
+  `--stat`: `lsjson --hash <key>` and `lsf <key>` list the whole parent prefix and filter it, so their cost grows
+  with the number of objects next to the key. Measured on halley (2026-10-07, prefix
+  `grid1_tier0/simlinegrid/` with 64 724 objects): rclone 1.53.3 `lsjson --hash` 9.9-14.9 s, `lsf` 8.6-15.8 s;
+  rclone 1.75.1 `lsjson --stat --hash` 0.14-0.19 s; in `pdrgrid/` (1 776 objects) 0.36-0.64 s vs 0.15-0.20 s.
+  Size and MD5 agree between the two versions (rclone 1.75 names the hash `md5`, 1.53 `MD5`; both are read).
+  On S3, `lsjson --stat` of a missing key exits 0 with a directory entry; this counts as absent. rclone >= 1.57
+  prints `NOTICE: s3: s3 provider "" not known` when the remote has no `provider` (harmless). `pdr_run --check`
+  shows the version and the lookup method in the storage line.
+- **Existence checks** use one `lsjson --stat` (rclone >= 1.57) or one `lsf` per candidate name; `lsf` exits 0 with empty output for a missing file in an
   existing directory and 3 ("directory not found") for a missing directory/bucket: both mean "absent". Any other
   failure (timeout, credentials) is retried and then logged as an ERROR (treated as absent, as before).
   The skip-existing test therefore costs one `lsf` (about 0.3 s) for a plain name and a second for `<name>.gz`.

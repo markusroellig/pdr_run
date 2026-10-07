@@ -10,6 +10,14 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Added
 
+- **`storage.rclone_binary` and `lsjson --stat`** (branch `feature/rclone-stat`): the rclone executable is
+  configurable (default `rclone` on `PATH`), and with rclone >= 1.57 (version read once at start-up) every
+  single-object lookup - overwrite check and MD5/size verification of each upload, download size, existence
+  check - is `lsjson --stat`, one HEAD request, instead of a listing of the whole parent prefix. Older rclone
+  keeps the old calls. Root cause of the SIMLINE upload slow-down on halley: with rclone 1.53.3 one lookup in
+  `grid1_tier0/simlinegrid/` (64 724 objects) took 9.9-14.9 s and an upload needs two, growing with every
+  stored object; rclone 1.75.1 with `--stat`: 0.14-0.19 s, same size and MD5. `--check` names the rclone
+  version and the lookup method. See [RClone storage on S3](README.md#rclone-storage-on-s3).
 - **SIMLINE output bundling** `simline.bundle_outputs` (default `false`): the ~420 side files of a node's
   `simlineoutput/` are stored as ONE archive `simlinegrid/SIMLINE<model>.tar.gz` (flat members named as in the
   file-by-file layout) instead of one object each; `pdrstruct<model>_simline.hdf5` stays its own object. With
