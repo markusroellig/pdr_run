@@ -790,7 +790,8 @@ produces); any other value is logged and treated as `finished`.
 Other values written by the framework: `running` (`active` = true), `skipped` (model already exists in
 storage, see below), `ERROR` (exception while running `pdrexe`), `exception` and `exception_runtime` /
 `exception_setup_outer` (exception in the worker; `exception_runtime` only for a genuinely unexpected
-exception, never for a failed post-processing step), `failed_storage` (results could not be stored after all
+exception, never for a failed post-processing step; never written over a terminal status of the table above
+or `failed_storage`), `failed_storage` (results could not be stored after all
 retries, see [Storage Retries](#storage-retries)),
 `reset_stale` (see [Stale-Job Recovery](#stale-job-recovery)) and the legacy `problem`. Every one of these
 except `running` clears the `active` and `pending` flags of the job row.
@@ -902,6 +903,14 @@ pdr:
 
 Choose the cap from the slowest node of the grid, not the average. `pdr_run --check` warns if it is unset
 (`run.walltime`). The cap also sets the default stale threshold (below).
+
+The cap also sets the idle timeout of the MySQL sessions (`wait_timeout` and `interactive_timeout`, set on
+every new connection): `max(86400, 2 * max_walltime_s)` seconds, at most MySQL's maximum 31536000 s; 86400 s
+without a cap. No worker holds a database session or transaction open while `pdrexe`, ONION, SIMLINE, the UV
+continuum or the result uploads run, and pooled connections are re-checked on checkout (`pool_pre_ping`).
+If a session cannot be closed (server dropped the connection), a WARNING is logged and the connection is
+discarded; an exception in the worker after the run never replaces a terminal job status (`finished`,
+`timeout`, `failed_storage`, ... stay; only a job without one gets `exception*`).
 
 ## Stale-Job Recovery
 

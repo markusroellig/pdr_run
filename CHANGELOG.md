@@ -101,6 +101,26 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Fixed
 
+- **Long runs lost their status to a dropped database connection** (`b0c3381`, branch `fix/long-run-db-session`): in grid-1
+  tier 0 the jobs 1474, 1482 and 1490 hit the 30 h wall-time cap and were correctly classified `timeout`, but
+  `run_instance` had held a session (and its pooled MySQL connection) idle across the whole `pdrexe` run. The
+  server dropped it after `wait_timeout` (86400 s), `session.close()` raised `MySQLInterfaceError: The client
+  was disconnected by the server because of inactivity`, and `run_instance_wrapper` overwrote `timeout` with
+  `exception`. Results and logs were stored; only the final status was wrong. Now:
+  - `run_instance` only checks that the job exists and closes its session before the run; `run_pdr`, ONION,
+    SIMLINE, the UV continuum and the result uploads (`copy_pdroutput`, `copy_onionoutput`) end their
+    session's transaction (`release_connection`) before the external process or the uploads, so no
+    connection sits idle in a transaction across a long step (also covers `scripts/backfill_simline.py`).
+  - Closing a session never raises (`close_session`): a failed close/rollback is logged as WARNING and the
+    connection is invalidated. `session_scope` keeps the original exception when its rollback fails.
+  - `exception`, `exception_runtime` and `exception_setup_outer` are written through `mark_job_exception`, which
+    reads the current status in a fresh session and keeps a terminal one (`finished`, `finished_relaxed`,
+    `flagged`, `not_converged`, `aborted`, `missing_output`, `timeout`, `failed_storage`), logged as WARNING.
+  - The MySQL session `wait_timeout` / `interactive_timeout` follow the wall-time cap:
+    `max(86400, 2 * pdr.max_walltime_s)`, capped at MySQL's maximum 31536000 s (grid 1: 108000 s -> 216000 s);
+    86400 s as before without a cap.
+  Bookkeeping only, model results are not affected. The three tier-0 rows need a manual status correction to
+  `timeout` (see the deployment note of the branch). See [Wall-Time Cap](README.md#wall-time-cap).
 - **rclone/S3 write path** (`fa215e1`), following the operator notes for the Cologne S3 server: no
   `rclone mkdir` (buckets are never created; the bucket must exist), delete before overwrite, size and MD5
   verification after upload (MD5 also for multipart objects), timeouts on every rclone call, multipart
