@@ -588,6 +588,90 @@ def _kill_process_group(proc, term_timeout=10, kill_timeout=30):
         return None
 
 
+# First-iteration stall watchdog (pdr.stall_first_iteration_s). pdrexe prints
+#   ***** current shell #:    1 ***** current iteration step:   2 ***********
+# to stdout (pdroutput/TEXTOUT) when the second global iteration starts; the
+# first such line with a step >= 2 means the first global iteration is done.
+_RE_ITERATION_STEP = re.compile(rb'current iteration step:\s*(\d+)')
+# How often (seconds) the watchdog wakes up to read new TEXTOUT lines. Tests
+# set it small; one read per minute is negligible for a run of hours.
+STALL_POLL_S = 60.0
+
+
+class _FirstIterationScanner:
+    """Incremental reader of a growing TEXTOUT: :meth:`poll` reads the bytes
+    appended since the previous call and returns ``True`` once a line with
+    ``current iteration step: N`` and N >= 2 has been seen. A line cut by
+    the end of a read is completed on the next call."""
+
+    def __init__(self, path):
+        self.path = path
+        self.offset = 0
+        self.tail = b''
+        self.reached = False
+
+    def poll(self):
+        if self.reached:
+            return True
+        try:
+            with open(self.path, 'rb') as f:
+                f.seek(self.offset)
+                data = f.read()
+        except OSError:
+            return False
+        if not data:
+            return False
+        self.offset += len(data)
+        buf = self.tail + data
+        cut = buf.rfind(b'\n')
+        lines, self.tail = (buf[:cut + 1], buf[cut + 1:]) if cut >= 0 else (b'', buf)
+        if len(self.tail) > 65536:       # no newline for 64 kB: not a progress line
+            self.tail = self.tail[-4096:]
+        for m in _RE_ITERATION_STEP.finditer(lines):
+            if int(m.group(1)) >= 2:
+                self.reached = True
+                break
+        return self.reached
+
+
+def _wait_with_stall_watchdog(proc, textout_path, max_walltime_s, stall_after_s,
+                              poll_s=None):
+    """Wait for *proc* like ``proc.wait(timeout=max_walltime_s)`` and, in
+    addition, kill its process group if the first global iteration has not
+    finished (no ``current iteration step: 2`` line in *textout_path*)
+    *stall_after_s* seconds after the start. Once step 2 has been seen,
+    only the wall-time cap applies.
+
+    Returns ``(returncode, timed_out, stalled)``.
+    """
+    import time
+    poll_s = STALL_POLL_S if poll_s is None else poll_s
+    scanner = _FirstIterationScanner(textout_path)
+    t0 = time.monotonic()
+    while True:
+        elapsed = time.monotonic() - t0
+        if max_walltime_s and elapsed >= max_walltime_s:
+            return _kill_process_group(proc), True, False
+        if scanner.reached:
+            limit = None if not max_walltime_s else max(max_walltime_s - elapsed, 0)
+        else:
+            limit = max(min(poll_s, stall_after_s - elapsed), 0)
+            if max_walltime_s:
+                limit = min(limit, max(max_walltime_s - elapsed, 0))
+        try:
+            return proc.wait(timeout=limit), False, False
+        except subprocess.TimeoutExpired:
+            pass
+        if scanner.reached:
+            continue                     # wall-time cap reached: handled at the top
+        if scanner.poll():
+            logger.info(f"pdrexe pid {proc.pid}: first global iteration finished after "
+                        f"{(time.monotonic() - t0) / 3600:.2f} h; stall watchdog off")
+            continue
+        if time.monotonic() - t0 >= stall_after_s:
+            return _kill_process_group(proc), False, True
+
+
 def _store_run_status_fields(job, fields):
     """Copy the numeric/text fields from job_status.determine_job_status()
     onto *job*, skipping any column the connected database doesn't have
@@ -656,6 +740,26 @@ def should_compress(patterns, *names):
     if not names or names[0].endswith(GZ_SUFFIX) or names[0].startswith('pdrstruct'):
         return False
     return any(fnmatch.fnmatchcase(n, pat) for pat in patterns for n in names)
+
+
+def head_tail_copy(src, dst, limit):
+    """Write the first ``limit // 2`` and the last ``limit // 2`` bytes of
+    *src* to *dst*, with one marker line in between that names the number of
+    omitted bytes. Streams; never loads the file into memory."""
+    half = int(limit) // 2
+    size = os.path.getsize(src)
+    with open(src, 'rb') as fin, open(dst, 'wb') as fout:
+        remaining = half
+        while remaining > 0:
+            chunk = fin.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            fout.write(chunk)
+            remaining -= len(chunk)
+        fout.write((f"\n[pdr_run: {size - 2 * half} bytes omitted, original size {size} bytes; "
+                    f"storage.error_log_head_tail_bytes={int(limit)}]\n").encode())
+        fin.seek(size - half)
+        shutil.copyfileobj(fin, fout, 1024 * 1024)
 
 
 def gzip_file(src, dst, level=GZIP_LEVEL):
@@ -793,7 +897,11 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
             ``config['pdr']['max_walltime_s']`` (seconds; ``None``/absent
             = no cap, i.e. unchanged pre-existing behaviour). On expiry
             the pdrexe process group is killed and the job is classified
-            as 'timeout'.
+            as 'timeout'. Reads ``config['pdr']['stall_first_iteration_s']``
+            (seconds; ``None``/absent = off): if ``pdroutput/TEXTOUT``
+            shows no ``current iteration step: 2`` line that long after
+            the start, the process group is killed the same way and the
+            job is classified as 'stalled'.
 
     The exit status is classified by
     ``pdr_run.models.job_status.determine_job_status()`` from
@@ -812,6 +920,9 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
     max_walltime_s = PDR_CONFIG.get('max_walltime_s')
     if config and 'pdr' in config and 'max_walltime_s' in config['pdr']:
         max_walltime_s = config['pdr']['max_walltime_s']
+    stall_after_s = PDR_CONFIG.get('stall_first_iteration_s')
+    if config and 'pdr' in config and 'stall_first_iteration_s' in config['pdr']:
+        stall_after_s = config['pdr']['stall_first_iteration_s']
 
     try:
         job = _session.get(PDRModelJob, job_id)
@@ -847,18 +958,33 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
                 proc = subprocess.Popen(
                     cmd, stdout=textout, stderr=textout, start_new_session=True
                 )
-                try:
-                    returncode = proc.wait(timeout=max_walltime_s)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    logger.error(
-                        f"Job {job_id}: wall-time cap of {max_walltime_s}s "
-                        f"exceeded, killing process group (pid {proc.pid})")
-                    returncode = _kill_process_group(proc)
+                stalled = False
+                if stall_after_s:
+                    returncode, timed_out, stalled = _wait_with_stall_watchdog(
+                        proc, os.path.join('pdroutput', 'TEXTOUT'),
+                        max_walltime_s, stall_after_s)
+                    if timed_out:
+                        logger.error(
+                            f"Job {job_id}: wall-time cap of {max_walltime_s}s "
+                            f"exceeded, process group killed (pid {proc.pid})")
+                    if stalled:
+                        logger.error(
+                            f"Job {job_id}: first global iteration not finished after "
+                            f"{stall_after_s}s (pdr.stall_first_iteration_s), process "
+                            f"group killed (pid {proc.pid})")
+                else:
+                    try:
+                        returncode = proc.wait(timeout=max_walltime_s)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        logger.error(
+                            f"Job {job_id}: wall-time cap of {max_walltime_s}s "
+                            f"exceeded, killing process group (pid {proc.pid})")
+                        returncode = _kill_process_group(proc)
 
                 textout.flush()
                 status, fields = determine_job_status(
-                    returncode, timed_out, os.getcwd())
+                    returncode, timed_out, os.getcwd(), stalled=stalled)
                 job.status = status
                 _store_run_status_fields(job, fields)
 
@@ -966,12 +1092,31 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
         # set on job below are committed after them.
         release_connection(_session)
 
-        def _put(local_source, remote_name, attr=None, label=None):
+        log_limit = ((config or {}).get('storage') or {}).get('error_log_head_tail_bytes')
+
+        def _put(local_source, remote_name, attr=None, label=None, head_tail=False):
             """Store one file, as <remote_name>.gz if it matches
-            storage.compress_files. The temporary .gz is always removed."""
+            storage.compress_files. With *head_tail* and
+            storage.error_log_head_tail_bytes set, a larger file is stored as
+            its head and tail only. The temporary files are always removed."""
             gz_tmp = None
+            ht_tmp = None
             try:
                 upload_path, stored_name = local_source, remote_name
+                if head_tail and log_limit and os.path.getsize(local_source) > int(log_limit):
+                    ht_tmp = local_source + '.headtail'
+                    try:
+                        head_tail_copy(local_source, ht_tmp, log_limit)
+                    except OSError as exc:
+                        logger.error(f"Truncating {local_source} failed: {exc}")
+                        if os.path.exists(ht_tmp):
+                            os.remove(ht_tmp)
+                        ht_tmp = None
+                        failures.append(remote_name)
+                        return False
+                    logger.warning(f"{remote_name}: {os.path.getsize(local_source)} bytes > "
+                                   f"error_log_head_tail_bytes={log_limit}, storing head and tail only")
+                    local_source = upload_path = ht_tmp
                 if should_compress(patterns, remote_name, os.path.basename(local_source)):
                     gz_tmp = local_source + GZ_SUFFIX
                     stored_name = remote_name + GZ_SUFFIX
@@ -999,6 +1144,8 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
             finally:
                 if gz_tmp and os.path.exists(gz_tmp):
                     os.remove(gz_tmp)
+                if ht_tmp and os.path.exists(ht_tmp):
+                    os.remove(ht_tmp)
             if ok:
                 if attr:
                     setattr(job, attr, remote_dest)
@@ -1021,7 +1168,8 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
                         (os.path.join('pdroutput', 'pdrexe_error.log'),
                          'pdrexe_error' + model + '.log')):
                     if os.path.exists(local_source):
-                        _put(local_source, remote_name)
+                        _put(local_source, remote_name,
+                             head_tail=remote_name.startswith('pdrexe_error'))
             else:
                 for local_source, remote_name, attr, label in (
                         (os.path.join('pdroutput', 'pdrout.hdf'), hdf_out_name,

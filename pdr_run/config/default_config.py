@@ -104,8 +104,14 @@ STORAGE_CONFIG = {
     #   rclone_remote_type (auto), rclone_chunk_size_mb (64), rclone_upload_cutoff_mb (256),
     #   rclone_upload_concurrency (4), rclone_contimeout_s (30), rclone_idle_timeout_s (300),
     #   rclone_min_rate_mb_s (1.0), rclone_verify (True), rclone_max_retries (3)
-    # Recommended for grid 1 on a remote backend: compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]
+    # Recommended for grid 1 on a remote backend:
+    #   compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out", "pdrexe_error*.log"]
     'compress_files': [],           # fnmatch patterns of stored files to gzip whole-file (stored as <name>.gz); [] = none
+    # Size guard for the pdrexe log of a failed run (pdrexe_error<model>.log, stored only for
+    # timeout/stalled/aborted/missing_output jobs; 4-5 GB for the grid-1 tier-0 timeouts).
+    # None (default) = stored in full. A byte count N > 0: a larger log is stored as its first
+    # N/2 and last N/2 bytes with a marker line in between (before compress_files is applied).
+    'error_log_head_tail_bytes': None,
 }
 
 # PDR model configuration
@@ -127,6 +133,13 @@ PDR_CONFIG = {
     # group is killed (SIGTERM, then SIGKILL) and the job is marked
     # 'timeout'. See pdr_run.models.kosma_tau.run_pdr().
     'max_walltime_s': None,
+    # First-iteration stall watchdog, in seconds. None (default) = off,
+    # unchanged behaviour. While pdrexe runs, pdroutput/TEXTOUT is read once
+    # a minute; if no 'current iteration step: 2' line (start of the second
+    # global iteration) has appeared this long after the start, the process
+    # group is killed as for the wall-time cap and the job is marked
+    # 'stalled'. Once step 2 is seen only max_walltime_s applies.
+    'stall_first_iteration_s': None,
 }
 
 # UV H2 dissociation continuum post-processing (opt-in). Appends

@@ -1273,7 +1273,15 @@ def check_walltime(ctx: Ctx):
     if not wt:
         return WARN, ("pdr.max_walltime_s is unset: a hung pdrexe blocks its worker "
                       "forever (stale detection falls back to 6 h)")
-    return PASS, f"max_walltime_s={wt:g} s ({wt / 3600:.1f} h); stale threshold {1.5 * wt / 3600:.1f} h"
+    msg = f"max_walltime_s={wt:g} s ({wt / 3600:.1f} h); stale threshold {1.5 * wt / 3600:.1f} h"
+    stall = _pdr_cfg(ctx, 'stall_first_iteration_s')
+    if not stall:
+        return PASS, msg + "; stall watchdog off (pdr.stall_first_iteration_s unset)"
+    if stall >= wt:
+        return WARN, (msg + f"; stall_first_iteration_s={stall:g} s >= max_walltime_s: "
+                      "the stall watchdog never fires")
+    return PASS, (msg + f"; stall watchdog: kill as 'stalled' if the first global iteration "
+                  f"is not finished after {stall:g} s ({stall / 3600:.1f} h)")
 
 
 def check_compression(ctx: Ctx):
@@ -1287,11 +1295,18 @@ def check_compression(ctx: Ctx):
     if remote and not text_ok:
         return WARN, ("storage.compress_files does not cover TEXTOUT*: the screen logs (large ASCII, "
                       "can exceed 1 GB) are uploaded uncompressed; recommended for remote storage: "
-                      '["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]')
+                      '["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out", "pdrexe_error*.log"]')
     if not pats:
         return PASS, "storage.compress_files: none (results stored uncompressed)"
+    ht = (ctx.eff.get('storage') or {}).get('error_log_head_tail_bytes')
+    guard = (f"; pdrexe_error logs > {ht:g} bytes stored as head+tail" if ht
+             else "; pdrexe_error logs stored in full")
+    if remote and not any(fnmatch.fnmatchcase('pdrexe_error_j001.log', p) for p in pats):
+        # not a WARN: only failed jobs store this log. Hint only.
+        guard += ("; NOTE pdrexe_error*.log not compressed (the log of a timeout/stalled job can be "
+                  "4-5 GB, gzip ~17x): add \"pdrexe_error*.log\"")
     return PASS, ("storage.compress_files: " + ", ".join(pats)
-                  + " -> stored as <name>.gz (gzip level 6); pdrstruct is never compressed")
+                  + " -> stored as <name>.gz (gzip level 6); pdrstruct is never compressed" + guard)
 
 
 def check_workers(ctx: Ctx):

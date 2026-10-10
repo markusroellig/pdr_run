@@ -25,6 +25,7 @@ Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
   - [Job states](#job-states)
   - [Database columns](#database-columns)
 - [Wall-Time Cap](#wall-time-cap)
+  - [First-iteration stall watchdog](#first-iteration-stall-watchdog)
 - [Stale-Job Recovery](#stale-job-recovery)
 - [Storage Retries](#storage-retries)
   - [Whole-file compression of stored results](#whole-file-compression-of-stored-results)
@@ -199,7 +200,7 @@ created). After updating an existing installation, re-run `pip install -e .` so 
 Node state is the latest non-`skipped` job row of the node (the `--rerun` rule); a node
 with only skipped rows keeps its skipped row. Classes: `ok` (finished, skipped), `warn`
 (finished_relaxed, flagged, or a post-processing error), `bad` (not_converged, aborted,
-timeout, failed_storage, ...), `run`, `pending`. A node with `postproc_error` carries `warn_reason`
+timeout, stalled, failed_storage, ...), `run`, `pending`. A node with `postproc_error` carries `warn_reason`
 (if its class is `warn`; `"post-processing error"` or `"SIMLINE partial: <species> missing"`) and, for a
 partial SIMLINE run, `simline_failed_species`. Axes are read from the parameter columns
 (log10 of `xnsur`, `mass`, `sint`; `zmetal` only if it varies) and each node carries its
@@ -755,7 +756,8 @@ pdr_run --config production.yaml --model-name prod_run
 are a plain Fortran `STOP`). pdr_run therefore does not trust the exit code alone.
 `pdr_run.models.job_status.determine_job_status()` classifies every run, in this order:
 
-1. The wall-time cap fired (see [Wall-Time Cap](#wall-time-cap)) -> `timeout`.
+1. The first-iteration stall watchdog fired (see [First-iteration stall watchdog](#first-iteration-stall-watchdog))
+   -> `stalled`; the wall-time cap fired (see [Wall-Time Cap](#wall-time-cap)) -> `timeout`.
 2. `pdrexe` returned a non-zero exit code (any value, also a negative one from a signal) -> `aborted`.
 3. `pdroutput/pdrstruct_s.hdf5` does not exist -> `missing_output`.
 4. Otherwise the convergence outcome is read from **`pdroutput/run_status.json`** if that file exists.
@@ -786,6 +788,7 @@ produces); any other value is logged and treated as `finished`.
 | `aborted` | `pdrexe` exit code != 0 | no | logs only |
 | `missing_output` | exit code 0, but no `pdrstruct_s.hdf5` | no | logs only |
 | `timeout` | wall-time cap exceeded, process group killed | no | logs only |
+| `stalled` | first global iteration not finished within `pdr.stall_first_iteration_s`, process group killed | no | logs only |
 
 Other values written by the framework: `running` (`active` = true), `skipped` (model already exists in
 storage, see below), `ERROR` (exception while running `pdrexe`), `exception` and `exception_runtime` /
@@ -817,7 +820,7 @@ except `running` clears the `active` and `pending` flags of the job row.
 | `postproc_error` | TEXT | error messages of failed ONION / SIMLINE steps (`ONION <species>: ...; SIMLINE: ...`); the job status is not changed by them |
 
 The TEXTOUT fallback fills only `converged`, `global_iterations` and `eps_final`; the other `run_status_*`
-columns stay NULL. For `aborted`, `missing_output` and `timeout` all `run_status_*` columns are NULL.
+columns stay NULL. For `aborted`, `missing_output`, `timeout` and `stalled` all `run_status_*` columns are NULL.
 
 `ensure_additive_columns(engine)` adds any of these columns that is missing to an existing table with
 `ALTER TABLE ... ADD COLUMN` (portable across SQLite, MySQL and PostgreSQL). It is called at the end of
@@ -830,14 +833,17 @@ the columns stay unpopulated. `pdr_run --check` does not migrate; it reports the
 
 The model's own status is kept. `run_kosma_tau` runs UV continuum, ONION and SIMLINE only for a usable
 model: `finished`, `finished_relaxed`, `flagged` (`job_status.POSTPROCESS_STATUSES`). For every other status
-this is skipped and logged, and the classification stays (`aborted`, `timeout`, `missing_output`,
+this is skipped and logged, and the classification stays (`aborted`, `timeout`, `stalled`, `missing_output`,
 `not_converged`).
 
 What is stored (`copy_pdroutput`):
 
 - Always: the screen log `TEXTOUT<model>`, `pdr_config<model>.json` and `PDRNEW<model>.INP` if present.
-- For `aborted`, `timeout` and `missing_output` additionally `run_status<model>.json` (if the model wrote
-  one) and `pdrexe_error<model>.log` (from `pdrexe_error.log`), but **no result files**: the output of such a
+- For `aborted`, `timeout`, `stalled` and `missing_output` additionally `run_status<model>.json` (if the model
+  wrote one) and `pdrexe_error<model>.log` (from `pdrexe_error.log`; gzip-compressed when
+  `storage.compress_files` matches it, e.g. `pdrexe_error*.log`, and cut to head+tail when
+  `storage.error_log_head_tail_bytes` is set, see [Whole-file compression](#whole-file-compression-of-stored-results)),
+  but **no result files**: the output of such a
   run is partial, and a stored `pdrstruct<model>.hdf5` would be taken for a finished node by the
   skip-existing logic.
 - For `finished`, `finished_relaxed`, `flagged` and `not_converged` (complete output,
@@ -912,6 +918,36 @@ If a session cannot be closed (server dropped the connection), a WARNING is logg
 discarded; an exception in the worker after the run never replaces a terminal job status (`finished`,
 `timeout`, `failed_storage`, ... stay; only a job without one gets `exception*`).
 
+### First-iteration stall watchdog
+
+`pdr.stall_first_iteration_s` (seconds, default `None` = off, behaviour unchanged) kills a `pdrexe` whose first
+global iteration does not finish in time. While `pdrexe` runs, `run_pdr()` reads the new part of
+`pdroutput/TEXTOUT` (the captured screen output) once a minute and looks for a progress line with an iteration
+step >= 2,
+
+```
+***** current shell #:    1 ***** current iteration step:   2 ***********
+```
+
+which `pdrexe` prints when the second global iteration starts. If no such line has appeared
+`stall_first_iteration_s` seconds after the start, the process group is killed exactly as for the wall-time cap
+(SIGTERM, SIGKILL after 10 s) and the job is classified **`stalled`** (terminal, logs only, class `bad` in
+`status --json`, selected by `--rerun failed` or `--rerun stalled`). Once step 2 has been seen the watchdog is
+off and only `max_walltime_s` applies. No `pdrexe` change is involved. `pdr_run --check` names the setting in
+`run.walltime` (WARN if it is not smaller than `max_walltime_s`).
+
+Calibration on grid 1, tier 0 (321 finished nodes, 6 concurrent jobs on halley, from the stored TEXTOUT): the
+first global iteration took 1.11-2.03 h (median 1.38 h; per density layer the maximum grows from 1.31 h at
+n_s = 1e1 to 2.03 h at 1e6). The three `timeout` nodes `100_60_{-30,-20,-10}_60_00` never reached step 2: they
+were at shell 544/443/337 after 30 h, stuck for hours in single shells. With 28800 s (8 h, ~4x the slowest
+legitimate first iteration) each would have been stopped after 8 h instead of 30 h.
+
+```yaml
+pdr:
+  max_walltime_s: 108000
+  stall_first_iteration_s: 28800   # 8 h
+```
+
 ## Stale-Job Recovery
 
 A job that is `running` but whose driver process died (crash, reboot or power loss of the host, `kill -9`)
@@ -979,8 +1015,16 @@ unchanged). A result file whose **stored name** (e.g. `pdrchem<model>.hdf5`, `ch
 
 ```yaml
 storage:
-  compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out"]   # recommended for grid 1
+  compress_files: ["TEXTOUT*", "pdrchem*.hdf5", "chemchk*.out", "pdrexe_error*.log"]   # recommended for grid 1
+  error_log_head_tail_bytes: null   # optional size guard, e.g. 500000000
 ```
+
+- **`pdrexe_error*.log`**: the pdrexe log of a `timeout`/`stalled`/`aborted`/`missing_output` job (stored only
+  for those) is stored through the same path and follows `compress_files`. The grid-1 tier-0 timeouts wrote
+  4.3-5.4 GB each (millions of `Tier1 MAXIT fail` warnings); gzip level 6 gives ~17x (500 MB -> 29-31 MB).
+  `storage.error_log_head_tail_bytes` (default `None` = stored in full) stores a larger log as its first and
+  last N/2 bytes with a marker line `[pdr_run: K bytes omitted, original size S bytes; ...]` in between; the
+  cut is applied before compression, the local log is not changed.
 
 - Measured on a (5,0,0) node: `pdrchem_c.hdf5` 65 MB -> 21 MB, `chemchk.out` 29 MB -> 3 MB. Per-dataset HDF5
   compression does not help (the size is per-object overhead of 1000 small datasets).

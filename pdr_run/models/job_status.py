@@ -31,6 +31,9 @@ STATUS_FLAGGED = 'flagged'
 STATUS_ABORTED = 'aborted'
 STATUS_MISSING_OUTPUT = 'missing_output'
 STATUS_TIMEOUT = 'timeout'
+# Killed by the first-iteration stall watchdog (pdr.stall_first_iteration_s):
+# the first global iteration was not finished within the configured time.
+STATUS_STALLED = 'stalled'
 
 # Statuses for which downstream post-processing (onion/simline/uv continuum)
 # is considered to be operating on a usable model.
@@ -40,11 +43,12 @@ SUCCESS_STATUSES = (STATUS_FINISHED, STATUS_FINISHED_RELAXED, STATUS_FLAGGED)
 # a job as terminal (see database.queries._update_job_status).
 ALL_STATUSES = SUCCESS_STATUSES + (
     STATUS_NOT_CONVERGED, STATUS_ABORTED, STATUS_MISSING_OUTPUT, STATUS_TIMEOUT,
+    STATUS_STALLED,
 )
 
 # Statuses whose pdroutput/ is a complete, valid structure output: safe to
 # store as the node's result (a not_converged model still ran to the end and
-# wrote every output file). For timeout/aborted/missing_output the files, if
+# wrote every output file). For timeout/stalled/aborted/missing_output the files, if
 # any, are partial and are NOT stored as results - a partial
 # pdrstruct<model>.hdf5 would be mistaken for a finished node by the
 # skip-existing logic; only the logs are stored for diagnosis.
@@ -147,7 +151,7 @@ def parse_textout_convergence(textout_path):
 
 
 def determine_job_status(returncode, timed_out, workdir,
-                          pdroutput_subdir='pdroutput'):
+                          pdroutput_subdir='pdroutput', stalled=False):
     """Classify a completed (or killed) ``pdrexe`` run.
 
     Args:
@@ -158,6 +162,9 @@ def determine_job_status(returncode, timed_out, workdir,
         workdir (str): directory the model ran in (contains
             ``pdroutput/``).
         pdroutput_subdir (str): name of the output subdirectory.
+        stalled (bool): ``True`` if the first-iteration stall watchdog
+            (``pdr.stall_first_iteration_s``) fired and the process group
+            was killed.
 
     Returns:
         ``(status, fields)``: *status* is one of the ``STATUS_*``
@@ -167,6 +174,9 @@ def determine_job_status(returncode, timed_out, workdir,
     """
     fields = _empty_fields()
     pdroutput_dir = os.path.join(workdir, pdroutput_subdir)
+
+    if stalled:
+        return STATUS_STALLED, fields
 
     if timed_out:
         return STATUS_TIMEOUT, fields

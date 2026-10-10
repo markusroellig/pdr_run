@@ -38,7 +38,7 @@ STATUS_CLASS = {
     'finished': 'ok', 'skipped': 'ok', 'finished_relaxed': 'warn', 'flagged': 'warn',
     'running': 'run', 'pending': 'pending', 'created': 'pending',
 }
-# anything else (not_converged, aborted, missing_output, timeout, failed_storage,
+# anything else (not_converged, aborted, missing_output, timeout, stalled, failed_storage,
 # exception*, error*, reset_stale, ...) is 'bad'
 PHYSICS_STATUSES = ('finished', 'finished_relaxed', 'flagged', 'not_converged')
 OUTPUT_STATUSES = PHYSICS_STATUSES          # complete structure output stored

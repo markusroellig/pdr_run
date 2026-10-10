@@ -10,6 +10,21 @@ Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
 ### Added
 
+- **First-iteration stall watchdog** `pdr.stall_first_iteration_s` (branch `deploy/grid1-t0-restart-2026-10-11`,
+  default `None` = off, behaviour unchanged): while `pdrexe` runs, `run_pdr` reads the new part of
+  `pdroutput/TEXTOUT` once a minute; if no `current iteration step: N` line with N >= 2 (start of the second
+  global iteration) has appeared that long after the start, the process group is killed like at the wall-time
+  cap and the job gets the new terminal status **`stalled`** (logs only, no post-processing, class `bad` in
+  `status --json`, `--rerun failed|stalled`). No new `pdrexe`, so no provenance change for the grid. `--check`
+  names the setting (`run.walltime`, WARN if not below `max_walltime_s`). Calibration from the stored TEXTOUT
+  of the 321 finished grid-1 tier-0 nodes: first iteration 1.11-2.03 h (median 1.38 h, slowest n_s = 1e6
+  layer); the three timeouts `100_60_{-30,-20,-10}_60_00` never reached step 2 in 30 h. Recommended 28800 s
+  (8 h, ~4x the slowest): would have freed 3 x 22 = 66 worker-hours on those three nodes.
+- **`pdrexe_error*.log` compression and size guard**: the pdrexe log stored for failed jobs already followed
+  `storage.compress_files`, but the grid config did not list it, so the three tier-0 timeouts stored 4.3, 4.5
+  and 5.4 GB uncompressed (gzip ~17x). Recommended pattern list extended by `"pdrexe_error*.log"` (`--check`
+  prints a NOTE when it is missing on remote storage). New optional `storage.error_log_head_tail_bytes`
+  (default `None` = full log): a larger log is stored as head + tail with a marker line.
 - **SIMLINE partial failures are recorded** (maintainer decision 2026-10-07): `run_simline.py` exits 0 as soon
   as one species succeeded, so 19 tier-0 nodes lost species silently (e.g. `Failed species: C+, 13C+, C, 13C`)
   and 8 nodes lack O with no error. After an exit 0, `run_simline` now checks the driver's SUMMARY and, per
