@@ -82,8 +82,9 @@ from pdr_run.config.default_config import (
     DEFAULT_PARAMETERS, PDR_CONFIG, PDR_OUT_DIRS, PDR_INP_DIRS
 )
 from pdr_run.database import get_db_manager
+from pdr_run.database.db_manager import close_session, database_config_for_run
 from pdr_run.database.queries import (
-    get_or_create, get_model_name_id, update_job_status
+    get_or_create, get_model_name_id, update_job_status, mark_job_exception
 )
 from pdr_run.database.models import (
     KOSMAtauExecutable, User, ChemicalDatabase, 
@@ -146,7 +147,7 @@ def create_database_entries(model_name, model_path, param_combinations, config=N
     # Extract database config if available
     db_config = None
     if config and 'database' in config:
-        db_config = config['database']
+        db_config = database_config_for_run(config)
         logger.debug(f"Using database config from provided config: {sanitize_config(db_config)}")
         logger.debug(f"Database config type: {type(db_config)}")
         sanitized = sanitize_config(db_config) if isinstance(db_config, dict) else 'Not a dict'
@@ -368,96 +369,97 @@ def run_instance(job_id, config=None, force_onion=False, json_template=None, kee
     # Pass the database config from the run config so the worker reconnects to
     # the same backend (e.g. MySQL) as the main process. Tables were created
     # once in the main process; the worker only needs to query.
-    db_config = (config or {}).get('database') if isinstance(config, dict) else None
-    db_manager = get_db_manager(db_config)
+    db_manager = get_db_manager(database_config_for_run(config))
     db_manager.log_diagnostics(f"worker-{os.getpid()}:init")
 
     try:
         # DO NOT call create_tables() here - it causes connection leaks
-        # Tables are created once in create_database_entries() in the main process
+        # Tables are created once in create_database_entries() in the main process.
+        # Only check that the job exists, then release the connection: no
+        # session or open transaction may be held across the model run. An
+        # idle pooled connection is dropped by the server after wait_timeout,
+        # and closing such a session at the end of a long run raised and
+        # turned a 'timeout' job into 'exception' (grid-1 tier 0, jobs
+        # 1474/1482/1490). The workflow functions open their own sessions.
         session = db_manager.get_session()
-
         try:
-            job = session.get(PDRModelJob, job_id)
-
-            if not job:
-                logger.error(f"Job with ID {job_id} not found in database")
-                db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_job")
-                return []
-
-            if config is None:
-                logger.debug(f"No config provided for job {job_id}, using defaults")
-                config = {'pdr': PDR_CONFIG}
-
-            pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
-            logger.debug(f"PDR base directory: {pdr_dir}")
-
-            if not os.path.exists(pdr_dir):
-                logger.error(f"PDR directory does not exist: {pdr_dir}")
-                db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_pdr_dir")
-                return [f"Error: PDR directory {pdr_dir} does not exist"]
-
-            # Save current directory
-            current_dir = os.getcwd()
-            logger.debug(f"Current working directory: {current_dir}")
-
-            def _execute_in_tmp_dir(tmp_dir_path_local):
-                original_cwd_for_execute = os.getcwd()
-                try:
-                    _setup_execution_environment(tmp_dir_path_local, pdr_dir, config, json_template)
-                    os.chdir(tmp_dir_path_local)
-                    logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
-
-                    run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config, force_simline=force_simline, rerun=rerun)
-
-                    return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
-                except Exception as exec_err:
-                    logger.error(f"Job {job_id}: Error during execution in {tmp_dir_path_local}: {exec_err}", exc_info=True)
-                    # Use session_scope for automatic cleanup instead of manual session management
-                    update_job_status(job_id, "exception_runtime")
-                    raise
-                finally:
-                    os.chdir(original_cwd_for_execute)
-                    logger.info(f"Job {job_id}: Restored working directory from temp to: {original_cwd_for_execute}")
-
-            output_lines_result = []
-            try:
-                os.chdir(pdr_dir)
-                logger.debug(f"Job {job_id}: Changed working directory to PDR base: {pdr_dir}")
-
-                if keep_tmp:
-                    persistent_tmp_dir = tempfile.mkdtemp(prefix=f'pdr-job{job_id}-')
-                    logger.warning(f"Job {job_id}: Temporary directory {persistent_tmp_dir} will be kept due to --keep-tmp flag.")
-                    logger.warning(f"Job {job_id}: Please ensure you manually clean up this directory after debugging: {persistent_tmp_dir}")
-                    try:
-                        output_lines_result = _execute_in_tmp_dir(persistent_tmp_dir)
-                    except Exception as e_persistent:
-                        output_lines_result.extend([f"Error in persistent temp dir: {str(e_persistent)}", traceback.format_exc()])
-                else:
-                    with tempfile.TemporaryDirectory(prefix=f'pdr-job{job_id}-') as tmp_dir_context:
-                        logger.info(f"Job {job_id}: Created temporary directory: {tmp_dir_context}")
-                        try:
-                            output_lines_result = _execute_in_tmp_dir(tmp_dir_context)
-                        except Exception as e_context:
-                            output_lines_result.extend([f"Error in temp dir: {str(e_context)}", traceback.format_exc()])
-
-            except Exception as e_outer:
-                logger.error(f"Job {job_id}: Outer error during setup or execution: {str(e_outer)}", exc_info=True)
-                # Use session_scope for automatic cleanup instead of manual session management
-                update_job_status(job_id, "exception_setup_outer")
-                output_lines_result.extend([f"Outer Error: {str(e_outer)}", traceback.format_exc()])
-            finally:
-                os.chdir(current_dir)
-                logger.debug(f"Job {job_id}: Restored original working directory: {current_dir}")
-
-            end_time_instance = time.time()
-            logger.info(f"Job {job_id} finished processing in {end_time_instance - start_time_instance:.2f} seconds.")
-            return output_lines_result
-
+            job_found = session.get(PDRModelJob, job_id) is not None
         finally:
-            # CRITICAL FIX: Always close the session to prevent connection leaks
-            session.close()
-            logger.debug(f"Database session closed for job {job_id} in run_instance")
+            close_session(session, f"run_instance job {job_id}")
+
+        if not job_found:
+            logger.error(f"Job with ID {job_id} not found in database")
+            db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_job")
+            return []
+
+        if config is None:
+            logger.debug(f"No config provided for job {job_id}, using defaults")
+            config = {'pdr': PDR_CONFIG}
+
+        pdr_dir = config['pdr'].get('base_dir', PDR_CONFIG['base_dir'])
+        logger.debug(f"PDR base directory: {pdr_dir}")
+
+        if not os.path.exists(pdr_dir):
+            logger.error(f"PDR directory does not exist: {pdr_dir}")
+            db_manager.log_diagnostics(f"worker-{os.getpid()}:missing_pdr_dir")
+            return [f"Error: PDR directory {pdr_dir} does not exist"]
+
+        # Save current directory
+        current_dir = os.getcwd()
+        logger.debug(f"Current working directory: {current_dir}")
+
+        def _execute_in_tmp_dir(tmp_dir_path_local):
+            original_cwd_for_execute = os.getcwd()
+            try:
+                _setup_execution_environment(tmp_dir_path_local, pdr_dir, config, json_template)
+                os.chdir(tmp_dir_path_local)
+                logger.info(f"Job {job_id}: Changed working directory to temporary directory: {tmp_dir_path_local}")
+
+                run_kosma_tau(job_id, tmp_dir_path_local, force_onion=force_onion, config=config, force_simline=force_simline, rerun=rerun)
+
+                return [f"Job {job_id}: Execution in {tmp_dir_path_local} completed. Check logs for details."]
+            except Exception as exec_err:
+                logger.error(f"Job {job_id}: Error during execution in {tmp_dir_path_local}: {exec_err}", exc_info=True)
+                # Never replaces a terminal status the run already wrote
+                mark_job_exception(job_id, "exception_runtime")
+                raise
+            finally:
+                os.chdir(original_cwd_for_execute)
+                logger.info(f"Job {job_id}: Restored working directory from temp to: {original_cwd_for_execute}")
+
+        output_lines_result = []
+        try:
+            os.chdir(pdr_dir)
+            logger.debug(f"Job {job_id}: Changed working directory to PDR base: {pdr_dir}")
+
+            if keep_tmp:
+                persistent_tmp_dir = tempfile.mkdtemp(prefix=f'pdr-job{job_id}-')
+                logger.warning(f"Job {job_id}: Temporary directory {persistent_tmp_dir} will be kept due to --keep-tmp flag.")
+                logger.warning(f"Job {job_id}: Please ensure you manually clean up this directory after debugging: {persistent_tmp_dir}")
+                try:
+                    output_lines_result = _execute_in_tmp_dir(persistent_tmp_dir)
+                except Exception as e_persistent:
+                    output_lines_result.extend([f"Error in persistent temp dir: {str(e_persistent)}", traceback.format_exc()])
+            else:
+                with tempfile.TemporaryDirectory(prefix=f'pdr-job{job_id}-') as tmp_dir_context:
+                    logger.info(f"Job {job_id}: Created temporary directory: {tmp_dir_context}")
+                    try:
+                        output_lines_result = _execute_in_tmp_dir(tmp_dir_context)
+                    except Exception as e_context:
+                        output_lines_result.extend([f"Error in temp dir: {str(e_context)}", traceback.format_exc()])
+
+        except Exception as e_outer:
+            logger.error(f"Job {job_id}: Outer error during setup or execution: {str(e_outer)}", exc_info=True)
+            # Never replaces a terminal status the run already wrote
+            mark_job_exception(job_id, "exception_setup_outer")
+            output_lines_result.extend([f"Outer Error: {str(e_outer)}", traceback.format_exc()])
+        finally:
+            os.chdir(current_dir)
+            logger.debug(f"Job {job_id}: Restored original working directory: {current_dir}")
+
+        end_time_instance = time.time()
+        logger.info(f"Job {job_id} finished processing in {end_time_instance - start_time_instance:.2f} seconds.")
+        return output_lines_result
     finally:
         db_manager.log_diagnostics(f"worker-{os.getpid()}:exit")
 
@@ -607,7 +609,7 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
     # anything else runs. Without this, a failure early in run_instance would
     # send the error-path update_job_status() call through a fresh SQLite
     # singleton (the default) that has no tables.
-    db_config = (config or {}).get('database') if isinstance(config, dict) else None
+    db_config = database_config_for_run(config)
     if db_config is not None:
         get_db_manager(db_config)
 
@@ -618,9 +620,10 @@ def run_instance_wrapper(job_id, config=None, force_onion=False, json_template=N
     except Exception as e:
         logger.error(f"Critical error in run_instance_wrapper for job {job_id}: {str(e)}", exc_info=True)
 
-        # Use session_scope for automatic cleanup - simplified error handling
+        # Fresh session; a terminal status the run already wrote (finished,
+        # timeout, failed_storage, ...) is kept, see mark_job_exception.
         try:
-            update_job_status(job_id, "exception")
+            mark_job_exception(job_id, "exception")
         except Exception as db_error:
             logger.error(f"Failed to update job status for job {job_id} after exception: {db_error}")
 

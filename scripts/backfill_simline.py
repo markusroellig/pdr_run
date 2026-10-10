@@ -162,8 +162,9 @@ def main(argv=None):
         config = yaml.safe_load(fh)
     model_name = args.model or config['pdr']['model_name']
 
-    from pdr_run.database.db_manager import get_db_manager
-    session = get_db_manager(config.get('database')).get_session()
+    from pdr_run.database.db_manager import (
+        close_session, database_config_for_run, get_db_manager)
+    session = get_db_manager(database_config_for_run(config)).get_session()
     try:
         jobs = select_jobs(session, model_name, args.job_ids, args.limit, args.rerun_ok)
         logger.info(f"{len(jobs)} job(s) of model {model_name} selected")
@@ -183,7 +184,7 @@ def main(argv=None):
         logger.info(f"done in {time.time() - t_start:.0f} s: {counts}")
         return 0 if set(counts) <= {'ok'} else 1
     finally:
-        session.close()
+        close_session(session, "backfill_simline")
 
 
 if __name__ == '__main__':

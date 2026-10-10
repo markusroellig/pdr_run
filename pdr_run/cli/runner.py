@@ -604,13 +604,13 @@ def main():
     # Stale-job recovery utility action: runs and exits, no model execution.
     if getattr(args, 'reset_stale_jobs', False):
         from pdr_run.database.queries import reset_stale_jobs, DEFAULT_STALE_AFTER_S
-        from pdr_run.database.db_manager import get_db_manager
+        from pdr_run.database.db_manager import get_db_manager, database_config_for_run
         # This can be the first thing run against a database (e.g. right
         # after deploying to a new host) - ensure the schema exists (and
         # any additive columns are patched in) before querying it, exactly
         # like a normal grid run's create_database_entries() would. Safe
         # to call repeatedly (see DatabaseManager.create_tables()).
-        get_db_manager(config.get('database') if config else None).create_tables()
+        get_db_manager(database_config_for_run(config)).create_tables()
         if args.stale_after_hours is not None:
             stale_after_s = args.stale_after_hours * 3600
         else:

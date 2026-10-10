@@ -20,6 +20,7 @@ from pdr_run.io.file_manager import (
     create_dir, copy_dir, move_files, make_tarfile, get_digest
 )
 from pdr_run.database import get_db_manager
+from pdr_run.database.db_manager import close_session, release_connection
 from pdr_run.storage.base import LocalCopy
 from pdr_run.models.job_status import (
     determine_job_status, SUCCESS_STATUSES, COMPLETE_OUTPUT_STATUSES,
@@ -365,7 +366,7 @@ def create_pdrnew_from_job_id(job_id, session=None, return_content=False):
         return None
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"create_pdrnew_from_job_id: Closed local session for job {job_id}")
 
 def create_json_from_job_id(job_id, session=None, return_content=False, config=None):
@@ -521,7 +522,7 @@ def create_json_from_job_id(job_id, session=None, return_content=False, config=N
         return None
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"create_json_from_job_id: Closed local session for job {job_id}")
 
 def set_gridparam(zmetal, density, cmass, radiation, shieldh2):
@@ -839,6 +840,10 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
                 # pdrexe itself running - see _kill_process_group().
                 cmd = shlex.split('./' + exe.executable_file_name)
                 timed_out = False
+                # No open transaction (and so no pooled connection) during
+                # the run: the server drops idle connections after
+                # wait_timeout. update_job_status() above committed already.
+                release_connection(_session)
                 proc = subprocess.Popen(
                     cmd, stdout=textout, stderr=textout, start_new_session=True
                 )
@@ -890,7 +895,7 @@ def run_pdr(job_id, tmp_dir='./', session=None, config=None):
                 raise
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"run_pdr: Closed local session for job {job_id}")
 
 def copy_pdroutput(job_id, config=None, session=None, model_status=None):
@@ -957,6 +962,9 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
 
         patterns = compress_patterns(config)
         uploaded = {}   # remote_name -> what is actually stored (compressed files only)
+        # No idle connection held during the uploads; the file attributes
+        # set on job below are committed after them.
+        release_connection(_session)
 
         def _put(local_source, remote_name, attr=None, label=None):
             """Store one file, as <remote_name>.gz if it matches
@@ -1170,7 +1178,7 @@ def copy_pdroutput(job_id, config=None, session=None, model_status=None):
         return True
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"copy_pdroutput: Closed local session for job {job_id}")
 
 def set_oniondir(spec):
@@ -1285,6 +1293,7 @@ def run_onion(spec, job_id, tmp_dir='./', config=None, session=None):
 
             onion_code = './' + onion_file_name
             logger.info(f"Running onion code {onion_code}")
+            release_connection(_session)   # no idle connection held during ONION
             try:
                 #os.system(f"{onion_code} pdrout.hdf >> {textout.name} 2>> {textout.name}")
                 os.system(f"{onion_code} {hdf5_name} >> {textout.name} 2>> {textout.name}")
@@ -1297,7 +1306,7 @@ def run_onion(spec, job_id, tmp_dir='./', config=None, session=None):
         logger.info(f"Completed onion run for species {spec}")
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"run_onion: Closed local session for job {job_id}")
 
 def copy_onionoutput(spec, job_id, config=None, session=None):
@@ -1333,6 +1342,8 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
         model = job.model_job_name
         model_path = job.model_name.model_path
         
+        release_connection(_session)   # no idle connection held during the uploads
+
         onion_files = [
             'jerg_' + spec + '.smli',
             'jerg_' + spec + '.srli',
@@ -1361,7 +1372,7 @@ def copy_onionoutput(spec, job_id, config=None, session=None):
         return ok
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"copy_onionoutput: Closed local session for job {job_id}")
 
 
@@ -1681,6 +1692,8 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         simline_out = os.path.join(workdir, 'simlineoutput')
         os.makedirs(simline_out, exist_ok=True)
         logger.info(f"Running SIMLINE pipeline for job {job_id}: {' '.join(cmd)}")
+        # no idle connection held during the pipeline and the uploads below
+        release_connection(_session)
         with open(os.path.join(simline_out, 'TEXTOUT_SIMLINE'), 'w') as textout:
             proc = subprocess.run(cmd, cwd=workdir, stdout=textout,
                                   stderr=subprocess.STDOUT,
@@ -1737,7 +1750,7 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         return ok
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"run_simline: Closed local session for job {job_id}")
 
 
@@ -1832,6 +1845,7 @@ def run_uv_continuum(job_id, tmp_dir='./', config=None, session=None):
             [h2py_dir] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
 
         log_path = os.path.join(workdir, 'pdroutput', 'TEXTOUT_UVCONT')
+        release_connection(_session)   # no idle connection held during the tool run
         logger.info(f"Running UV continuum post-processing for job {job_id}: "
                    f"{' '.join(cmd)}")
         with open(log_path, 'w') as textout:
@@ -1865,7 +1879,7 @@ def run_uv_continuum(job_id, tmp_dir='./', config=None, session=None):
         return closure_ok
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"run_uv_continuum: Closed local session for job {job_id}")
 
 
@@ -2088,7 +2102,7 @@ def run_kosma_tau(job_id, tmp_dir='./', force_onion=False, config=None, force_si
 
     finally:
         # CRITICAL FIX: Always close the session to prevent connection leaks
-        _session.close() # Close the session acquired at the beginning of run_kosma_tau
+        close_session(_session, f"run_kosma_tau job {job_id}")
         logger.debug(f"Database session closed for job {job_id} in run_kosma_tau")
 
 # Sentinel written to HDFFile.sha256_sum* when a model is skipped because it
@@ -2299,5 +2313,5 @@ def update_db_pdr_output_entries(job_id, session, config=None):
             raise
     finally:
         if session_created_locally:
-            _session.close()
+            close_session(_session)
             logger.debug(f"update_db_pdr_output_entries: Closed local session for job {job_id}")

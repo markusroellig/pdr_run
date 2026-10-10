@@ -5,6 +5,7 @@ database backends (SQLite, MySQL, PostgreSQL) with proper password handling,
 connection pooling, and security measures.
 """
 
+import math
 import os
 import logging
 from typing import Optional, Dict, Any, Union
@@ -576,9 +577,12 @@ class DatabaseManager:
                 cursor = dbapi_connection.cursor()
                 cursor.execute("SET SESSION sql_mode='TRADITIONAL'")
                 cursor.execute("SET SESSION time_zone='+00:00'")
-                # Set long timeouts for long-running processes
-                cursor.execute("SET SESSION wait_timeout=86400")
-                cursor.execute("SET SESSION interactive_timeout=86400")
+                # Idle timeout of the server-side session. Derived from the
+                # wall-time cap by database_config_for_run(); a pooled
+                # connection may sit idle for a whole model run in a worker.
+                timeout_s = _clamp_session_timeout(self.config.get('session_timeout_s'))
+                cursor.execute(f"SET SESSION wait_timeout={timeout_s}")
+                cursor.execute(f"SET SESSION interactive_timeout={timeout_s}")
                 cursor.close()
                 
     @property
@@ -657,10 +661,15 @@ class DatabaseManager:
             yield session
             session.commit()
         except Exception:
-            session.rollback()
+            # A failing rollback (e.g. the server dropped the connection)
+            # must not replace the original exception.
+            try:
+                session.rollback()
+            except Exception as rb_exc:  # noqa: BLE001
+                logger.warning(f"Rollback of DB session failed ({type(rb_exc).__name__}: {rb_exc})")
             raise
         finally:
-            session.close()  # Use close() instead of remove() for regular sessions
+            close_session(session, "session_scope")
             
     def create_tables(self) -> None:
         """Create all database tables defined in models.
@@ -762,6 +771,87 @@ class DatabaseManager:
 
 
 # Global instance for backward compatibility
+# MySQL session idle timeout (wait_timeout / interactive_timeout), seconds.
+DEFAULT_SESSION_TIMEOUT_S = 86400
+MYSQL_MAX_SESSION_TIMEOUT_S = 31536000   # MySQL's maximum wait_timeout (Linux)
+
+
+def _clamp_session_timeout(value) -> int:
+    """``value`` as an int within [DEFAULT_SESSION_TIMEOUT_S, MYSQL_MAX_SESSION_TIMEOUT_S];
+    None/invalid gives the default."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_TIMEOUT_S
+    return min(MYSQL_MAX_SESSION_TIMEOUT_S, max(DEFAULT_SESSION_TIMEOUT_S, value))
+
+
+def session_timeout_for_walltime(max_walltime_s) -> int:
+    """MySQL session idle timeout for a wall-time cap:
+    ``max(86400, 2 * max_walltime_s)``, capped at MySQL's maximum 31536000 s.
+    No cap (None/0/invalid) gives 86400 s."""
+    try:
+        walltime = float(max_walltime_s)
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_TIMEOUT_S
+    if walltime <= 0:
+        return DEFAULT_SESSION_TIMEOUT_S
+    return _clamp_session_timeout(math.ceil(2 * walltime))
+
+
+def database_config_for_run(config):
+    """The database config of a run config, with ``session_timeout_s``
+    derived from ``config['pdr']['max_walltime_s']``.
+
+    Returns ``config['database']`` unchanged (also None) when no wall-time cap
+    is configured, i.e. the pre-existing behaviour (86400 s). Every
+    ``get_db_manager()`` call that initialises the manager of a driver or a
+    worker uses this so all connections get the same idle timeout.
+    """
+    if not isinstance(config, dict):
+        return None
+    db_config = config.get('database')
+    max_walltime_s = (config.get('pdr') or {}).get('max_walltime_s')
+    if not max_walltime_s:
+        return db_config
+    db_config = dict(db_config or {})
+    db_config['session_timeout_s'] = session_timeout_for_walltime(max_walltime_s)
+    return db_config
+
+
+def close_session(session, context: str = "") -> None:
+    """Close a session without ever raising.
+
+    Closing rolls back the session's open transaction; if the server has
+    dropped the connection in the meantime (idle timeout, restart) that
+    rollback raises. Such a failure is logged as a WARNING and the session's
+    connections are invalidated (discarded from the pool), so a broken
+    connection is never reused and a close can never overwrite a job status.
+    """
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"Closing DB session{' (' + context + ')' if context else ''} failed "
+            f"({type(exc).__name__}: {exc}); invalidating its connection")
+        try:
+            session.invalidate()
+        except Exception as inv_exc:  # noqa: BLE001
+            logger.warning(f"Invalidating the DB session failed ({type(inv_exc).__name__}: {inv_exc})")
+
+
+def release_connection(session) -> None:
+    """End the session's open transaction (commit) so that no pooled
+    connection is held idle across a long external operation (pdrexe, ONION,
+    SIMLINE, uploads). The session stays usable; it checks out a connection
+    again on its next query (pre-pinged). Loaded objects stay readable
+    (``expire_on_commit=False`` in the session factory)."""
+    if session is not None and session.in_transaction():
+        session.commit()
+
+
 _db_manager: Optional[DatabaseManager] = None
 _db_manager_pid: Optional[int] = None
 _db_manager_lock = threading.Lock()

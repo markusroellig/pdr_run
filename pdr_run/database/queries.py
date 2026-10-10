@@ -336,8 +336,43 @@ def _update_job_status(job_id: int, status: str, session: Session) -> None:
         logger.info(f"Updated job {job_id} status to '{status}'")
     except Exception as e:
         logger.error(f"Failed to update job {job_id} status to '{status}': {e}")
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception as rb_exc:  # noqa: BLE001 - keep the original error
+            logger.warning(f"Rollback after the failed status update of job {job_id} "
+                           f"failed: {rb_exc}")
         raise
+
+
+# Statuses that describe the outcome of a model run (job_status.ALL_STATUSES)
+# or of storing its results. An exception raised after one of them was
+# written (e.g. a database connection lost while closing a session) is a
+# driver-side problem, not the job's outcome: mark_job_exception() keeps them.
+TERMINAL_RUN_STATUSES = tuple(_JOB_STATUS_ALL_STATUSES) + ('failed_storage',)
+
+
+def mark_job_exception(job_id: int, status: str = 'exception') -> bool:
+    """Record an exception status for a job unless it already carries a
+    terminal status (``TERMINAL_RUN_STATUSES``).
+
+    Reads the current status in a fresh session, so it works after the
+    worker's own session or connection broke. Returns True if ``status`` was
+    written, False if a terminal status was kept (logged as WARNING) or the
+    job does not exist.
+    """
+    with get_db_manager().session_scope() as session:
+        job = session.get(PDRModelJob, job_id)
+        if job is None:
+            logger.error(f"Job {job_id} not found; cannot set status '{status}'")
+            return False
+        session.refresh(job)
+        if job.status in TERMINAL_RUN_STATUSES:
+            logger.warning(f"Job {job_id}: keeping terminal status '{job.status}' "
+                           f"instead of '{status}' (the exception came after the run "
+                           "outcome was stored)")
+            return False
+        _update_job_status(job_id, status, session)
+        return True
 
 
 def summarize_job_states(job_ids: List[int], session: Optional[Session] = None):
