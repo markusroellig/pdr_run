@@ -7,6 +7,7 @@ for different remote storage protocols.
 """
 
 import os
+import re
 import subprocess
 import logging
 import socket
@@ -390,6 +391,15 @@ class SFTPStorage(RemoteStorage):
                 f"{self.host} after retries (treating as absent): {e}")
             return False
 
+def parse_rclone_version(output):
+    """``(major, minor)`` from ``rclone version`` output (``rclone v1.75.1``,
+    ``rclone v1.53.3-DEV``), or None if it cannot be read."""
+    if isinstance(output, bytes):
+        output = output.decode('utf-8', 'replace')
+    m = re.search(r'rclone v(\d+)\.(\d+)', output if isinstance(output, str) else '')
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 class _RClonePermanentError(Exception):
     """An rclone failure that retrying cannot fix (bad credentials, missing
     bucket, key too long, fatal rclone exit status). Deliberately NOT a
@@ -417,6 +427,10 @@ _RCLONE_NOT_FOUND_MARKERS = ('directory not found', 'object not found',
                              'file not found')
 
 _MIB = 1024 * 1024
+# ``lsjson --stat`` (rclone >= 1.57) returns the one object at the path (one
+# HEAD on S3). Older rclone lists the whole parent prefix and filters it, which
+# costs ~12 s per call in a prefix of 65 000 objects (halley, 2026-10-07).
+_RCLONE_STAT_MIN_VERSION = (1, 57)
 _S3_MAX_PARTS = 9000          # hard limit is 10 000; keep a margin
 _S3_MAX_KEY_BYTES = 1024
 
@@ -437,7 +451,12 @@ class RCloneStorage(Storage):
     ``rclone_idle_timeout_s`` (300), ``rclone_min_rate_mb_s`` (1.0; the
     subprocess timeout is 300 s + size / rate), ``rclone_verify`` (True),
     ``rclone_max_retries`` (3), ``rclone_call_timeout_s`` (120; bound of
-    every metadata call, 2.5x of it is the base of the transfer timeout).
+    every metadata call, 2.5x of it is the base of the transfer timeout),
+    ``rclone_binary`` ("rclone"; path of the rclone executable, ``~`` expanded).
+
+    Single-object lookups (overwrite check, verification, download size,
+    existence) use ``lsjson --stat`` when the binary is rclone >= 1.57 and
+    the parent-listing ``lsjson``/``lsf`` otherwise (``self.use_stat``).
     """
 
     def __init__(self, config):
@@ -459,6 +478,7 @@ class RCloneStorage(Storage):
         retries = config.get('rclone_max_retries')
         self.max_retries = 3 if retries is None else int(retries)
         self.last_error = None   # message of the last failed operation
+        self.rclone_binary = os.path.expanduser(str(config.get('rclone_binary') or 'rclone'))
 
         # Add logger for consistency with SFTPStorage
         self.logger = logging.getLogger("dev")
@@ -472,12 +492,17 @@ class RCloneStorage(Storage):
             self.remote_name = self.remote
             self.remote_base_path = ''
 
-        # Verify rclone is installed
+        # Verify rclone is installed; its version decides the lookup method
         try:
-            subprocess.run(['rclone', 'version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except (subprocess.SubprocessError, FileNotFoundError):
-            logger.error("rclone is not installed or not in PATH")
-            raise RuntimeError("rclone is not installed or not in PATH")
+            res = subprocess.run([self.rclone_binary, 'version'], check=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        except (subprocess.SubprocessError, OSError):
+            logger.error(f"rclone binary '{self.rclone_binary}' is not installed or not in PATH")
+            raise RuntimeError(
+                f"rclone binary '{self.rclone_binary}' is not installed or not in PATH")
+        self.rclone_version = parse_rclone_version(res.stdout)
+        self.use_stat = (self.rclone_version is not None
+                         and self.rclone_version >= _RCLONE_STAT_MIN_VERSION)
 
     # ------------------------------------------------------------ helpers
 
@@ -497,7 +522,7 @@ class RCloneStorage(Storage):
             self.remote_type = env.lower()
             return self.remote_type
         try:
-            res = subprocess.run(['rclone', 'listremotes', '--long'],
+            res = subprocess.run([self.rclone_binary, 'listremotes', '--long'],
                                  capture_output=True, text=True, timeout=30)
             if res.returncode == 0:
                 for line in str(res.stdout).splitlines():
@@ -525,7 +550,7 @@ class RCloneStorage(Storage):
     def _run(self, args, timeout, extra_flags=()):
         """Run ``rclone <args> <flags>``; returns the CompletedProcess.
         ``timeout`` (s) is a hard bound: a hang can never block a worker."""
-        cmd = ['rclone'] + list(args) + self._global_flags() + list(extra_flags)
+        cmd = [self.rclone_binary] + list(args) + self._global_flags() + list(extra_flags)
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
     def _check(self, result, what):
@@ -590,17 +615,23 @@ class RCloneStorage(Storage):
                 h.update(block)
         return h.hexdigest()
 
-    def _remote_stat(self, full_remote_path):
-        """``{'size': int, 'md5': str|None}`` of one object, or None if absent."""
-        res = self._run(['lsjson', '--hash',
-                         full_remote_path], timeout=self.call_timeout_s)
+    def _remote_stat(self, full_remote_path, hashes=True):
+        """``{'size': int, 'md5': str|None}`` of one object, or None if absent.
+
+        rclone >= 1.57: ``lsjson --stat`` (one object; on S3 a missing key
+        comes back as a directory entry, which counts as absent). Older rclone:
+        ``lsjson`` of the path, which lists the parent prefix."""
+        args = ['lsjson'] + (['--hash'] if hashes else []) + (['--stat'] if self.use_stat else [])
+        res = self._run(args + [full_remote_path], timeout=self.call_timeout_s)
         if res.returncode in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND) or (
                 res.returncode != 0 and any(
                     m in (res.stderr or '').lower() for m in _RCLONE_NOT_FOUND_MARKERS)):
             return None
         self._check(res, 'rclone lsjson')
         import json
-        entries = [e for e in json.loads(res.stdout or '[]') if not e.get('IsDir')]
+        data = json.loads(res.stdout or '[]')
+        entries = [e for e in (data if isinstance(data, list) else [data])
+                   if e and not e.get('IsDir')]
         if not entries:
             return None
         e = entries[0]
@@ -777,7 +808,8 @@ class RCloneStorage(Storage):
             return False
 
     def file_exists(self, remote_path):
-        """Check if a file exists on the remote using one ``lsf``.
+        """Check if a file exists on the remote: one ``lsjson --stat`` with
+        rclone >= 1.57 (``self.use_stat``), otherwise one ``lsf``.
 
         ``rclone lsf`` exits 0 with empty output for a missing file in an
         existing directory, and 3 ("directory not found") if the directory
@@ -790,6 +822,8 @@ class RCloneStorage(Storage):
         @self._retrying()
         def _attempt():
             full_remote_path = self._get_full_remote_path(remote_path)
+            if self.use_stat:
+                return self._remote_stat(full_remote_path, hashes=False) is not None
             res = self._run(['lsf', full_remote_path], timeout=self.call_timeout_s)
             if res.returncode in (_RC_DIR_NOT_FOUND, _RC_FILE_NOT_FOUND) or (
                     res.returncode != 0 and any(

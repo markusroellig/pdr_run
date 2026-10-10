@@ -27,13 +27,16 @@ class FakeRclone:
         self.fail = {}           # command -> list of results to return first
         self.corrupt_after_put = False
         self.multipart_md5 = True
+        self.version = ''        # stdout of `rclone version` ('' = unparseable)
+        self.binaries = set()    # cmd[0] of every call
 
     def _key(self, arg):
         return arg.split(':', 1)[1]
 
     def __call__(self, cmd, capture_output=True, text=True, timeout=None, **kw):
+        self.binaries.add(cmd[0])
         if cmd[1] == 'version':
-            return _cp()
+            return _cp(out=self.version)
         self.calls.append((cmd, timeout))
         name = cmd[1]
         queue = self.fail.get(name)
@@ -52,12 +55,18 @@ class FakeRclone:
             self.objects[self._key(cmd[3])] = data
             return _cp()
         if name == 'lsjson':
-            k = self._key(cmd[3])
+            k = self._key(next(a for a in cmd[2:] if ':' in a))
+            stat = '--stat' in cmd
             if k not in self.objects:
+                if stat:   # rclone 1.75 on S3: a missing key is a (virtual) directory
+                    return _cp(out=json.dumps({'Path': '', 'Name': '', 'Size': -1,
+                                               'IsDir': True}))
                 return _cp(out='[\n]\n')
             d = self.objects[k]
-            return _cp(out=json.dumps([{'Path': 'x', 'Size': len(d), 'IsDir': False,
-                                        'Hashes': {'MD5': hashlib.md5(d).hexdigest()}}]))
+            e = {'Path': 'x', 'Size': len(d), 'IsDir': False}
+            if '--hash' in cmd:   # new rclone reports lower-case hash names
+                e['Hashes'] = {('md5' if stat else 'MD5'): hashlib.md5(d).hexdigest()}
+            return _cp(out=json.dumps(e if stat else [e]))
         if name == 'deletefile':
             if self._key(cmd[2]) not in self.objects:
                 return _cp(4, err='object not found')
@@ -72,6 +81,8 @@ class FakeRclone:
             return _cp(out='          -1 2020-01-01 00:00:00        -1 noices\n')
         if name == 'mkdir':
             return _cp()
+        if name == 'listremotes':
+            return _cp(out='kosmatau: s3\n')
         raise AssertionError(f"unexpected rclone call {cmd}")
 
     def names(self):
@@ -346,3 +357,104 @@ def test_preflight_probe_warns_for_s3_remote_without_bucket(fake):
     status, detail = preflight._storage_rclone(_ctx('x'), _st('kosmatau'))
     assert status == preflight.WARN and 'bucket' in detail
     assert 'copyto' not in fake.names()
+
+
+# ------------------------------------------- rclone_binary and lsjson --stat
+
+def test_parse_rclone_version():
+    from pdr_run.storage.remote import parse_rclone_version
+    assert parse_rclone_version(b'rclone v1.75.1\n- os/version: ubuntu') == (1, 75)
+    assert parse_rclone_version('rclone v1.53.3-DEV\n- os/arch: linux/amd64') == (1, 53)
+    assert parse_rclone_version('') is None
+    assert parse_rclone_version(None) is None
+
+
+def test_old_rclone_uses_parent_listing(fake, src):
+    fake.version = 'rclone v1.53.3-DEV\n'
+    st = make()
+    assert st.rclone_version == (1, 53) and st.use_stat is False
+    fake.objects['noices/grid1/f.bin'] = b'old'
+    assert st.store_file(str(src), 'f.bin') is True
+    assert st.file_exists('f.bin') is True
+    lsjson = [c for c, _ in fake.calls if c[1] == 'lsjson']
+    assert len(lsjson) == 2 and all('--stat' not in c for c in lsjson)
+    assert 'lsf' in fake.names()
+
+
+def test_new_rclone_uses_stat_for_every_single_object_lookup(fake, src, tmp_path):
+    fake.version = 'rclone v1.75.1\n- os/version: ubuntu 22.04\n'
+    st = make()
+    assert st.rclone_version == (1, 75) and st.use_stat is True
+    fake.objects['noices/grid1/f.bin'] = b'old'
+    assert st.store_file(str(src), 'f.bin') is True            # stat, delete, put, verify
+    assert fake.objects['noices/grid1/f.bin'] == src.read_bytes()
+    assert st.file_exists('f.bin') is True
+    assert st.file_exists('nope.bin') is False                  # directory entry = absent
+    assert st.retrieve_file('f.bin', str(tmp_path / 'back.bin')) is True
+    assert (tmp_path / 'back.bin').read_bytes() == src.read_bytes()
+    assert 'lsf' not in fake.names()
+    lsjson = [c for c, _ in fake.calls if c[1] == 'lsjson']
+    assert len(lsjson) == 5 and all('--stat' in c for c in lsjson)
+
+
+def test_new_rclone_verifies_lower_case_md5(fake, src):
+    fake.version = 'rclone v1.75.1\n'
+    st = make(rclone_max_retries=0)
+    orig = fake.__call__
+
+    def wrong_md5(cmd, **kw):
+        r = orig(cmd, **kw)
+        if cmd[1] == 'lsjson' and '"md5"' in r.stdout:
+            d = json.loads(r.stdout)
+            d['Hashes']['md5'] = '0' * 32
+            return _cp(out=json.dumps(d))
+        return r
+    with patch('subprocess.run', wrong_md5):
+        assert st.store_file(str(src), 'f.bin') is False
+    assert 'MD5' in st.last_error
+
+
+def test_stat_missing_key_with_rc_not_found_is_absent(fake):
+    fake.version = 'rclone v1.75.1\n'
+    st = make(rclone_max_retries=0)
+    fake.fail['lsjson'] = [_cp(3, err='directory not found')]
+    assert st.file_exists('nope') is False
+    assert st.last_error is None
+
+
+def test_stat_transport_failure_is_retried_then_absent_with_error(fake):
+    fake.version = 'rclone v1.75.1\n'
+    st = make(rclone_max_retries=1)
+    fake.fail['lsjson'] = [_cp(1, err='connection refused')] * 2
+    assert st.file_exists('x') is False
+    assert 'connection refused' in st.last_error
+    assert fake.names().count('lsjson') == 2
+
+
+def test_rclone_binary_is_used_for_every_call(fake, src):
+    fake.version = 'rclone v1.75.1\n'
+    st = RCloneStorage({'base_dir': '/tmp', 'rclone_remote': 'kosmatau:noices/grid1',
+                        'rclone_binary': '~/bin/rclone-v1.75.1'})
+    assert st._detect_remote_type() == 's3'        # via listremotes
+    st.store_file(str(src), 'f.bin')
+    st.file_exists('f.bin')
+    import os
+    assert fake.binaries == {os.path.expanduser('~/bin/rclone-v1.75.1')}
+
+
+def test_missing_rclone_binary_raises():
+    with patch('subprocess.run', side_effect=FileNotFoundError('nope')):
+        with pytest.raises(RuntimeError, match='/opt/none/rclone'):
+            make(rclone_binary='/opt/none/rclone')
+
+
+def test_preflight_probe_with_new_binary_reports_stat_lookup(fake):
+    from pdr_run.cli import preflight
+    fake.version = 'rclone v1.75.1\n'
+    st = _st('kosmatau:noices/grid1')
+    st['rclone_opts']['rclone_binary'] = '/x/rclone-v1.75.1'
+    status, detail = preflight._storage_rclone(_ctx('x'), st)
+    assert status == preflight.PASS and 'rclone 1.75' in detail and 'lsjson --stat' in detail
+    assert fake.objects == {}
+    assert fake.binaries == {'/x/rclone-v1.75.1'}
+    assert 'lsf' not in fake.names()

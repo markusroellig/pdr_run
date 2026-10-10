@@ -864,18 +864,21 @@ def _storage_rclone(ctx: Ctx, st):
     """Probe the real RCloneStorage code path (store, overwrite, read back,
     delete) with short timeouts and no retries. Never creates a bucket."""
     t = ctx.timeout
-    try:
-        subprocess.run(['rclone', 'version'], check=True, capture_output=True, timeout=t)
-    except FileNotFoundError:
-        _fail("rclone is not installed or not in PATH")
-    from pdr_run.storage.remote import RCloneStorage
     opts = dict(st.get('rclone_opts') or {})
+    binary = os.path.expanduser(str(opts.get('rclone_binary') or 'rclone'))
+    try:
+        subprocess.run([binary, 'version'], check=True, capture_output=True, timeout=t)
+    except (FileNotFoundError, PermissionError):
+        _fail(f"rclone binary '{binary}' is not installed or not in PATH")
+    from pdr_run.storage.remote import RCloneStorage
     opts.update(rclone_contimeout_s=max(t, 1), rclone_idle_timeout_s=max(t, 1),
                 rclone_call_timeout_s=max(2 * t, 5), rclone_max_retries=0)
     storage = RCloneStorage({'base_dir': st['base_dir'], 'rclone_remote': st['rclone_remote'],
                              'use_mount': st['use_mount'],
                              'remote_path_prefix': st['remote_path_prefix'], **opts})
-    where = st['rclone_remote']
+    ver = storage.rclone_version
+    where = (f"{st['rclone_remote']} (rclone {'.'.join(map(str, ver)) if ver else '?'}, "
+             f"lookup {'lsjson --stat' if storage.use_stat else 'parent listing'})")
     t0 = time.monotonic()
     if storage._is_object_store():
         bucket = storage.bucket_of_remote()
@@ -1327,7 +1330,8 @@ def check_imports(ctx: Ctx):
     import importlib
     mods = ['pdr_run.core.engine', 'pdr_run.models.kosma_tau', 'pdr_run.models.job_status',
             'pdr_run.database.queries', 'pdr_run.utils.retry', 'pdr_run.storage.local']
-    st = _resolve_storage(ctx)['type']
+    sto = _resolve_storage(ctx)
+    st = sto['type']
     if st == 'sftp':
         mods.append('paramiko')
     dbtype = os.environ.get('PDR_DB_TYPE') or (ctx.eff.get('database') or {}).get('type') or 'sqlite'
@@ -1343,8 +1347,11 @@ def check_imports(ctx: Ctx):
             bad.append(f"{m} ({type(exc).__name__}: {_short(exc, 60)})")
     if bad:
         _fail('import failed: ' + '; '.join(bad))
-    if st == 'rclone' and not shutil.which('rclone'):
-        _fail("storage type is rclone but 'rclone' is not in PATH")
+    if st == 'rclone':
+        opts = sto.get('rclone_opts') or {}
+        binary = os.path.expanduser(str(opts.get('rclone_binary') or 'rclone'))
+        if not shutil.which(binary):
+            _fail(f"storage type is rclone but '{binary}' is not in PATH or not executable")
     return PASS, f"{len(mods)} modules/drivers importable (storage={st}, db={dbtype})"
 
 

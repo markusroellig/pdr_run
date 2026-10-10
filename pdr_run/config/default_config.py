@@ -98,6 +98,8 @@ STORAGE_CONFIG = {
     'use_local_copy': True,         # rclone/sftp: also keep every verified upload under local_copy_dir (same key layout)
     'local_copy_dir': None,         # root of the local copy; default base_dir (rclone). Required for sftp (base_dir is remote there)
     'remote_path_prefix': None,     # Optional prefix to strip from remote paths (rclone)
+    'rclone_binary': 'rclone',      # rclone executable (PATH name or path, ~ expanded), e.g. ~/bin/rclone-v1.75.1;
+                                    # rclone >= 1.57 is detected and single-object lookups use `lsjson --stat`
     # rclone/S3 tuning (all optional, see README "RClone storage on S3"):
     #   rclone_remote_type (auto), rclone_chunk_size_mb (64), rclone_upload_cutoff_mb (256),
     #   rclone_upload_concurrency (4), rclone_contimeout_s (30), rclone_idle_timeout_s (300),
