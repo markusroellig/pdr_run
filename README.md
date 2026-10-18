@@ -8,7 +8,11 @@ Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
 - [Installation](#installation)
 - [Preflight Check](#preflight-check)
 - [Grid Status Snapshot](#grid-status-snapshot-pdr_run-status)
+  - [Surveying a finished grid](#surveying-a-finished-grid)
 - [Querying the configuration of a job](#querying-the-configuration-of-a-job)
+- [Run Status and Exit Handling](#run-status-and-exit-handling)
+- [Reacting to KOSMA-tau code flags](#reacting-to-kosma-tau-code-flags)
+  - [Healing with a second binary](#healing-with-a-second-binary)
 - [Configuration](#configuration)
   - [Configuration Precedence](#configuration-precedence)
   - [Database Configuration](#database-configuration)
@@ -249,6 +253,28 @@ Example (abridged; `nodes`, `events` and `physics` shortened):
 
 Times are the naive local time of the collector host (`collector.utc_offset_s`), as stored by
 pdr_run; only `generated_at` is UTC.
+
+### Surveying a finished grid
+
+`status --json` is the primary survey of a tier: `summary.by_status` / `by_class` (counts), `summary.core_hours`,
+`nodes[]` with `idx` (position on the registry axes), `status`, `class`, `reruns`, `t_start`, `t_finish`, `exec_s`,
+`converged`, `global_it`, `eps`, `tsearch_flagged`, `chem_relaxed`, `uvcont.applied` / `closure_ok`; `urgent[]`
+(running jobs older than 1.5 x the cap), `storage` (stored, backlog and failed nodes), `events[]` (last 24 h by
+default, `--since` for a window). With `--with-physics` the per-node physics of the stored model files is added
+(surface/centre temperatures, columns, molecular fraction; cached in `--physics-cache`).
+
+Grid-level checks that the snapshot does not do, with the tools used for grid-1 tier 0:
+
+| Question | Source | Tool |
+|---|---|---|
+| Where do the flags cluster, and what do they mean? | `nodes[].tsearch_flagged`, `Solver health` dataset of every stored `pdrstruct<model>.hdf5` | read-only extraction over the store (h5py); classification A/B/C by residual, T continuity, column share and status bits: lab-notebook entry `2026-10-18_grid1-t0-flagged-quality` (`data/extract_health.py`, `analysis.py`, `data/classes.csv`) |
+| Are the nodes smooth across the grid? | per-node observables (T_surface, T_deep, H2 line totals, columns, front positions) from the stored files | second differences along each axis against the layer envelope (same entry; `2026-10-17_grid1-tier0-healing` for the healed nodes vs their neighbours) |
+| Reproducibility floor of a node | repeated runs with the same binary | noise-floor ensembles (`2026-10-12_noise-floor-tier0`): +-4.4 % per IR line, 2.4 % in the IR total at (5,0,4) |
+| Wall time and iteration budget per layer | `nodes[].exec_s`, `global_it` | `status --json` (ETA model `eta.*`); calibrate `max_walltime_s` and `stall_first_iteration_s` from the finished nodes of the previous tier |
+| Which binary computed a node? | `kosmatau_executables` row of the job, `/Parameters/Informations` of the file | `pdr_run status --json` does not list it yet; query the job table or the HDF5 attributes |
+
+Export the snapshot to a file for the record of a tier (`--out status_<tier>_<date>.json`); the
+grid-1 tier-0 survey of 2026-10-18 is the example referenced in the KOSMA-tau wiki page on run status.
 
 ## Querying the configuration of a job
 
@@ -777,13 +803,34 @@ Fields understood in `run_status.json` (all optional): `converged`, `global_iter
 `converged` must be one of the strings `strict`, `relaxed` or `no` (the values the TEXTOUT fallback
 produces); any other value is logged and treated as `finished`.
 
+What KOSMA-tau writes (reference: wiki page
+[Run status, exit codes and solver flags](https://github.com/markusroellig/kosma-tau/wiki/Run-status,-exit-codes-and-solver-flags)):
+
+- **Exit codes of `pdrexe`**: 0 = the global iteration ended (converged or not); 2 = controlled abort
+  (`abort_run`, `run_status.json` with `converged = "no"` and `exit_reason = <tag>`, e.g. `nan_ebal`,
+  `config_tsearch_tol_res_invalid`, `cmread_missing_formation_reaction`); 3 = the code's own chemistry stall
+  watchdog (`feature/chem-seeding`, `exit_reason = "stalled"`, `stall_*` fields, `pdroutput/pdrstall_s.hdf5`);
+  1 = Fortran `error stop` / runtime error; 137/143 = killed by pdr_run (cap or first-iteration watchdog).
+  pdr_run maps every non-zero code to `aborted`; the `exit_reason` of the stored `run_status.json` tells which.
+- **`tsearch_flagged_shells`** counts the shells of the final global iteration whose temperature-search status
+  bit mask (`/Local quantities/Auxiliary/Solver health`, column 0) is non-zero: 1 residual not met,
+  2 bracket collapsed, 4 chemistry not converged at the accepted T, 8 several roots, 16 no root in range,
+  32 thermal front, 64 evaluation budget, 128 coarse scan needed, 256 inner map not settled. In grid-1 tier 0,
+  95 % of the flagged shells carry only bit 256 (a self-consistency warning in the deep interior of dense
+  clumps; balance residual <= 0.05); bits 4 and 16 are errors.
+- **Chemistry counters** (`feature/chem-seeding` binaries with `numerical_params.chem_health_dataset = 1`):
+  `chem_calls`, `chem_failed_calls`, `chem_newton_iterations`, `chem_seeds_from_failed`, `chem_seed_restores`,
+  `chem_ptc_used`, `chem_ptc_failed`, `chem_ptc_polish_relaxed`, `chem_unconverged_shells`, `risk_class`
+  (`low` / `slow-global` / `medium` / `high`). pdr_run passes them through untouched (they are not DB columns
+  yet); read them from the stored `run_status<model>.json` or the HDF5 attributes.
+
 ### Job states
 
 | `status` | Meaning | Post-processing (UV continuum, ONION, SIMLINE) | Result files stored |
 |---|---|---|---|
 | `finished` | converged (`strict`), no flagged shells (or legacy fallback, see above) | yes | yes |
 | `finished_relaxed` | converged only under the relaxed criterion (`converged = relaxed`) | yes | yes |
-| `flagged` | converged, but `tsearch_flagged_shells > 0` (temperature search flagged shells) | yes | yes |
+| `flagged` | converged (`strict` or `relaxed`), but `tsearch_flagged_shells > 0`: at least one shell of the final iteration has a non-zero temperature-search status (see the bit list above); usable model, inspect the bits before a fit | yes | yes |
 | `not_converged` | `converged = no`; wins over `flagged` | no | yes |
 | `aborted` | `pdrexe` exit code != 0 | no | logs only |
 | `missing_output` | exit code 0, but no `pdrstruct_s.hdf5` | no | logs only |
@@ -888,6 +935,56 @@ WHERE status NOT IN ('finished', 'finished_relaxed', 'flagged', 'skipped') OR po
 ```
 
 Nodes are never retried automatically; use `--rerun` ([step 8](#8-rerun-failed-nodes)).
+
+## Reacting to KOSMA-tau code flags
+
+The job status says *that* a node needs attention; the KOSMA-tau flags say *why*. The table maps the
+flags to the pdr_run action. The JSON options named are KOSMA-tau configuration keys (template level), not
+pdr_run keys; a changed template or binary needs a copy of the pdr_run config (new `pdr_file_name`,
+`json_template_file`, `exe_revision`) and a new `pdr_run --check`.
+
+| Flag / status | Where to see it | Cause | pdr_run action |
+|---|---|---|---|
+| `timeout` after `max_walltime_s`, `stalled` after `stall_first_iteration_s`, or `aborted` with `exit_reason = stalled` (code watchdog, exit 3) | job status, stored `pdrexe_error*.log`, `run_status<model>.json` (`stall_worst_species`, `stall_av`) | chemistry stall at the sulphur/carbon front of dense clumps (n_s >= 1e6, chi >= 1e4); Newton solves re-seeded from failed solves | rerun with a binary from `feature/chem-seeding` and a template with `numerical_params.chem_seed_mode = 2`, `chem_failure_fallback = 1` (plus `chem_log_compact`, `chem_health_dataset`, `chem_risk_class`, `stall_watchdog` = 1): see [Healing with a second binary](#healing-with-a-second-binary) |
+| `flagged`, flagged shells with bit 256 only, residual <= 1e-3 | `status --json` (`tsearch_flagged`), `Solver health` dataset | slow inner fixed point (levels/chemistry/balance) in cold dense gas | keep; quote the caveat for the deep columns; optional test with `tsearch_inner_max = 16` |
+| `flagged` with bit 4, or `chem_unconverged_shells > 0` | `Solver health` column 9 = 0 at the flagged shell; `run_status` counters | chemistry not converged at the accepted temperature (n_s = 1e7, chi <= 1; S/C front) | `--rerun flagged` restricted to the node with the seeding binary; a node that stays "strict with unconverged shells" is kept as `flagged` (decision 2026-10-18) |
+| `flagged` with bit 8 or 32 at A_V 0.05-0.5 of chi >= 1e5 nodes | `Solver health`, T jumps by a factor e across one shell | unresolved thermal front at the surface | rerun with `stepper_accuracy_scale = 0.5` if the surface lines matter; otherwise keep with caveat |
+| `finished_relaxed`, or `global_it` >= 40 | `status --json` (`converged`, `global_it`) | global non-contraction (trace-species columns moving 3-20 % per sweep at n_s = 1e7) | no cure in the code yet; keep with caveat or exclude from fits; the seeding binary converged the three tier-0 cases after 19-31 iterations |
+| `aborted` with `exit_reason` `nan_ebal` / `nan_species_density` | `run_status<model>.json` | NaN in the balance or chemistry (rate fits outside their range) | template with `clamp_rate_temperatures = 1`; rerun |
+| `aborted` with `config_*` / `cmread_*` tags | `run_status<model>.json`, `pdrexe_error*.log` | invalid key value / network-species mismatch | fix template or network, `--check`, rerun |
+| `not_converged` | job status | `max_iterations` reached | `--rerun not_converged` with a larger `numerical_params.max_iterations` or the seeding binary |
+| `failed_storage`, `exception*`, `reset_stale` | job status | framework, not the code | [Storage Retries](#storage-retries), [Stale-Job Recovery](#stale-job-recovery), then `--rerun failed` |
+
+### Healing with a second binary
+
+Worked example: the nine stalled/timed-out nodes of grid-1 tier 0 (2026-10-18, lab-notebook entry
+`2026-10-17_grid1-tier0-healing`). The grid stays on its frozen binary; only the missing nodes are recomputed
+with a fixed binary, and the provenance of the mix is explicit in the database (own executable row, own
+template hash) and in the files (`/Parameters/Informations`, embedded config).
+
+1. Prepare an own base directory with symlinks to the grid base plus the new binary and template, and a
+   **copy** of the grid config that differs only in `pdr.base_dir`, `pdr_file_name`, `json_template_file`,
+   `exe_revision`, `compilation_date` (`configs/grid1_tier0_heal.yaml`). `model_name` stays the same, so the
+   results land in the same store and job table.
+2. `pdr_run --check --config configs/grid1_tier0_heal.yaml` until nothing FAILs.
+3. Move the partial files of the nodes to be healed into an attic (`pdrgrid/attic_v240/`, `mv -n`, and a
+   server-side copy on the remote) so that the old logs stay available.
+4. Run exactly the missing nodes, restricting the parameter lists on the command line and keeping the total
+   number of `pdrexe` processes within the machine limit:
+   ```bash
+   C="--grid --parallel --config configs/grid1_tier0_heal.yaml --rerun stalled,timeout"
+   pdr_run $C --workers 3 --dens 60 --mass -30 -20 -10 --chi 60
+   pdr_run $C --workers 2 --dens 70 --mass -20 -10 --chi 60
+   ```
+   `--rerun stalled,timeout` recomputes only nodes whose latest job is in one of these states; nodes already
+   healed are skipped.
+5. Acceptance gate: the pdr_run rerun must reproduce the reference run of the same node with the same binary
+   bit for bit (full comparison of `pdrstruct<model>.hdf5`; allowed differences: `/Parameters/Informations`,
+   the embedded config text, and the datasets pdr_run's post-processing extends: `Line emission IR`,
+   `Intensity array length`, `Metadata`). In the tier-0 healing, 70 of 74 datasets were identical for every
+   node, the four others only extended.
+6. Document the mix: the healed nodes carry the second executable row; quote both binaries in any product
+   of the grid.
 
 ## Wall-Time Cap
 

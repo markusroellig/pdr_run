@@ -8,6 +8,15 @@ Details and configuration of every item are in the [README](README.md); the comm
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
+### Documentation (2026-10-18)
+
+- README: the KOSMA-tau exit codes (0/1/2/3), the `exit_reason` tags, the meaning of `tsearch_flagged_shells`
+  (temperature-search status bits) and the chemistry counters of `feature/chem-seeding` binaries; new sections
+  *Reacting to KOSMA-tau code flags* (flag -> `--rerun` / template action table) and *Healing with a second
+  binary* (the grid-1 tier-0 procedure: copy config, attic, restricted `--rerun stalled,timeout`, bit-identity
+  gate), and *Surveying a finished grid* (`status --json` fields and the grid-level checks). Cross-references
+  the KOSMA-tau wiki page *Run status, exit codes and solver flags*. No code change.
+
 ### Added
 
 - **First-iteration stall watchdog** `pdr.stall_first_iteration_s` (branch `deploy/grid1-t0-restart-2026-10-11`,
