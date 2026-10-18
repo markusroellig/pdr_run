@@ -3,7 +3,7 @@
 All notable changes to pdr_run. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Details and configuration of every item are in the [README](README.md); the commit hash is given per item.
 
-## [Unreleased] - branch `feature/preflight-check` (grid-1 production readiness, 2026-09-29 .. 2026-10-02)
+## [Unreleased] - merged into `master` on 2026-10-18 (branches feature/status-json, feature/preflight-check, feature/grid1-status-uvcont, feature/simline-bundle, feature/simline-partial-fail, feature/rclone-stat, fix/long-run-db-session, deploy/grid1-t0-restart-2026-10-11; grid-1 production readiness, 2026-09-29 .. 2026-10-18)
 
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
