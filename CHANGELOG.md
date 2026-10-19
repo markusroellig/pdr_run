@@ -12,6 +12,13 @@ Details and configuration of every item are in the [README](README.md); the comm
   back (overwrite, stored name/compression kept). The separate `simlinegrid/pdrstruct<model>_simline.hdf5` object
   is no longer produced; `simlinegrid/` keeps only the side files. The FITS file names of new runs carry the stem
   `pdrstruct_s_<species>...`. Existing stored grids are NOT migrated by this change (see the consolidation note).
+- **Zero-emission species in the SIMLINE output check**: a `Zero-emission species:` line in the pipeline SUMMARY
+  (species with all-zero intensities and no FITS, e.g. [OI] in 12-15 K gas) skips the `[fits]` requirement, keeps
+  the `[hdf5]` one and is reported in the check note (`zero-emission species: O`, logged); it does not make the
+  node a partial run. Older TEXTOUT without the line behave as before.
+- **`scripts/consolidate_simline.py`** (new): migrates existing grids with the separate `_simline.hdf5` object into
+  `pdrgrid/pdrstruct<model>.hdf5` (superset and bit-identity check, attic copy `pdrgrid/attic_pre_simline/`, verified
+  overwrite; `--purge` optional). Not run automatically; see the README SIMLINE section.
 
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).

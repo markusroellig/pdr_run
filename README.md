@@ -1329,6 +1329,15 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
     storage time of a node from ~15-20 min to a few seconds. The local copy (`use_local_copy`) holds the
     archive as stored. `scripts/backfill_simline.py` calls `run_simline` with the grid config and therefore
     uses the same layout.
+  - Migration of grids stored with the old two-file layout: `python scripts/consolidate_simline.py --config
+    <cfg>.yaml [--job-ids ...] [--limit N] [--dry-run] [--nice N] [--purge]`. Per node it verifies with h5py that
+    the `_simline.hdf5` file contains every dataset of the grid file and that all common datasets outside the
+    SIMLINE-written paths are bit-identical (otherwise the node is refused), stores the old grid file as
+    `pdrgrid/attic_pre_simline/pdrstruct<model>.hdf5`, overwrites `pdrgrid/pdrstruct<model>.hdf5` with the SIMLINE
+    file, verifies the stored object and the local copy, and leaves the `_simline.hdf5` object in place unless
+    `--purge` is given. Nodes without a SIMLINE object, or whose grid file already has SIMLINE `By species`
+    datasets, are reported as already consolidated; exit status 1 if a node was refused or failed. No database
+    changes.
   - Reading either layout: `pdr_run.models.kosma_tau.fetch_simline_outputs(storage, model_path, model, dest_dir)`
     retrieves the side files of one node into `dest_dir` as plain `SIMLINE<model>.<file>` (archive if present,
     else the single files, `.gz` decompressed) and returns their names, so a grid with old-layout and bundled
