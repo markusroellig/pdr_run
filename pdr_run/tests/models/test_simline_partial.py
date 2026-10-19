@@ -32,6 +32,10 @@ def textout(species=SPECIES, failed=(), summary=True):
     return '\n'.join(lines) + '\n'
 
 
+def with_zero(text, zero):
+    return text + f'Zero-emission species: {", ".join(zero)}\n'
+
+
 def write_outputs(out_dir, species):
     os.makedirs(out_dir, exist_ok=True)
     for sp in species:
@@ -47,7 +51,7 @@ def write_outputs(out_dir, species):
 def test_parse_textout_full_and_partial():
     sp, summ = kosma_tau.parse_simline_textout(textout())
     assert sp == SPECIES
-    assert summ == dict(total=5, successful=5, failed=0, failed_species=[])
+    assert summ == dict(total=5, successful=5, failed=0, failed_species=[], zero_species=[])
     sp, summ = kosma_tau.parse_simline_textout(textout(failed=('C+', '13C+')))
     assert summ['failed'] == 2 and summ['failed_species'] == ['C+', '13C+']
 
@@ -56,6 +60,13 @@ def test_parse_textout_without_summary():
     sp, summ = kosma_tau.parse_simline_textout(textout(summary=False))
     assert sp == SPECIES and summ is None
     assert kosma_tau.parse_simline_textout('') == (None, None)
+
+
+def test_parse_textout_zero_species():
+    _, summ = kosma_tau.parse_simline_textout(with_zero(textout(), ['O']))
+    assert summ['zero_species'] == ['O']
+    _, summ = kosma_tau.parse_simline_textout(textout())          # old TEXTOUT
+    assert summ['zero_species'] == []
 
 
 # ------------------------------------------------------------- output check
@@ -231,3 +242,35 @@ def test_run_simline_rt_only_stores_back_into_pdrgrid(env, tmp_path, stored_gz):
     assert env['run'](textout(), SPECIES) is True
     assert sorted(os.listdir(pdrgrid)) == [name]          # same name, no new object
     assert not any(n.endswith('_simline.hdf5') for n in os.listdir(env['grid_dir']))
+
+
+def test_check_zero_emission_species_needs_no_fits(tmp_path):
+    have = [s for s in SPECIES if s != 'O']
+    out = tmp_path / 'simlineoutput'
+    write_outputs(str(out), have)
+    (out / 'TEXTOUT_SIMLINE').write_text(with_zero(textout(), ['O']))
+    work = tmp_path / f'{STEM}.hdf5'
+    work.write_bytes(b'not hdf5')
+    assert kosma_tau.check_simline_outputs(str(out / 'TEXTOUT_SIMLINE'), str(out), str(work)) \
+        == ([], [], 'zero-emission species: O')
+
+
+def test_check_zero_emission_species_still_needs_hdf5_dataset(tmp_path):
+    h5py = pytest.importorskip('h5py')
+    have = [s for s in SPECIES if s != 'O']
+    out = tmp_path / 'simlineoutput'
+    write_outputs(str(out), have)
+    (out / 'TEXTOUT_SIMLINE').write_text(with_zero(textout(), ['O']))
+    work = tmp_path / f'{STEM}.hdf5'
+    with h5py.File(work, 'w') as f:
+        g = f.create_group(kosma_tau.SIMLINE_BY_SPECIES)
+        for sp in have:
+            g.create_dataset(sp, data=[[0.0]])
+            g[sp].attrs['source'] = 'SIMLINE'
+    assert kosma_tau.check_simline_outputs(str(out / 'TEXTOUT_SIMLINE'), str(out), str(work))[1] \
+        == ['O [hdf5]']
+
+
+def test_run_simline_zero_emission_is_not_partial(env):
+    have = [s for s in SPECIES if s != 'O']
+    assert env['run'](with_zero(textout(), ['O']), have) is True

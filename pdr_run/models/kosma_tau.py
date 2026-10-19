@@ -1606,6 +1606,9 @@ def fetch_simline_outputs(storage, model_path, model, dest_dir):
 SIMLINE_BY_SPECIES = 'Integrated quantities/Intensities/By species'
 
 
+ZERO_NOTE_PREFIX = 'zero-emission species: '
+
+
 class SimlinePartialError(RuntimeError):
     """The SIMLINE pipeline exited 0 but not every species produced its
     outputs. Raised by ``run_simline`` after everything has been stored, so
@@ -1632,7 +1635,9 @@ def parse_simline_textout(text):
     Returns ``(species, summary)``: ``species`` is the list of the header line
     ``Species:     CO, C+, ...`` (None if absent); ``summary`` is None if the
     SUMMARY block is missing, else a dict with ``total``, ``successful``,
-    ``failed`` (ints or None) and ``failed_species`` (list).
+    ``failed`` (ints or None), ``failed_species`` (list) and ``zero_species``
+    (list; the ``Zero-emission species:`` line of a pipeline that writes zero
+    intensities for a species without FITS output, empty for older TEXTOUT).
     """
     species = None
     m = re.search(r'^Species:[ \t]*(.*)$', text, re.MULTILINE)
@@ -1649,8 +1654,11 @@ def parse_simline_textout(text):
 
     mm = re.search(r'^Failed species:[ \t]*(.*)$', tail, re.MULTILINE)
     failed_species = [s.strip() for s in mm.group(1).split(',') if s.strip()] if mm else []
+    mm = re.search(r'^Zero-emission species:[ \t]*(.*)$', tail, re.MULTILINE)
+    zero_species = [s.strip() for s in mm.group(1).split(',') if s.strip()] if mm else []
     return species, dict(total=_int('Total'), successful=_int('Successful'),
-                         failed=_int('Failed'), failed_species=failed_species)
+                         failed=_int('Failed'), failed_species=failed_species,
+                         zero_species=zero_species)
 
 
 def _simline_hdf5_species(hdf5_path):
@@ -1689,14 +1697,18 @@ def check_simline_outputs(textout_path, simline_out, workfile, species=None):
     1. the SUMMARY of run_simline.py in TEXTOUT_SIMLINE: ``Failed species:``
        (the driver exits 0 as soon as one species succeeded);
     2. for every species not listed as failed (species list from the driver's
-       ``Species:`` header, else *species*): at least one FITS file
+       ``Species:`` header, else *species*; species of the ``Zero-emission
+       species:`` line need no FITS file, their ``By species`` dataset holds
+       zeros): at least one FITS file
        ``<workfile stem>_<species>.<transition>.fits`` in *simline_out* (what
        fits_io.collect_species_results reads), and - if h5py is available -
        a ``By species/<species>`` dataset with source "SIMLINE" in *workfile*
        (what the grid collectors read).
 
     Returns ``(failed_species, missing_outputs, note)``; all empty/None means
-    complete.
+    complete. Zero-emission species add ``ZERO_NOTE_PREFIX + <species>`` to
+    the note (informational, not a failure; ``run_simline`` does not raise
+    for it alone).
     """
     try:
         with open(textout_path, errors='replace') as fh:
@@ -1705,11 +1717,13 @@ def check_simline_outputs(textout_path, simline_out, workfile, species=None):
         text = ''
     listed, summary = parse_simline_textout(text)
     note = None
+    zero = []
     if summary is None:
         note = 'no SUMMARY in TEXTOUT_SIMLINE'
         failed = []
     else:
         failed = summary['failed_species']
+        zero = summary['zero_species']
         if summary['failed'] and not failed:
             note = f"{summary['failed']} species failed (names not reported)"
     expected = listed or list(species or [])
@@ -1724,10 +1738,12 @@ def check_simline_outputs(textout_path, simline_out, workfile, species=None):
         if sp in failed:
             continue
         pat = re.compile(re.escape(f'{stem}_{sp}') + r'\..*\.fits$')
-        if not any(pat.match(f) for f in files):
+        if sp not in zero and not any(pat.match(f) for f in files):
             missing.append(f'{sp} [fits]')
         if in_hdf5 is not None and sp not in in_hdf5:
             missing.append(f'{sp} [hdf5]')
+    if zero:
+        note = '; '.join(filter(None, [note, ZERO_NOTE_PREFIX + ', '.join(zero)]))
     return failed, missing, note
 
 
@@ -1906,8 +1922,13 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
                 f"{' (one archive)' if simline_cfg.get('bundle_outputs', False) else ''} "
                 f"under simlinegrid/ for job {job_id}"
                 f"{'; grid file ' + stored_struct + ' updated' if refetched else ''}")
-        if failed_species or missing_outputs or note:
-            partial = SimlinePartialError(failed_species, missing_outputs, note)
+        # zero-emission species (e.g. [OI] in cold gas) are complete results
+        problem_note = '; '.join(p for p in (note or '').split('; ')
+                                 if p and not p.startswith(ZERO_NOTE_PREFIX)) or None
+        if note and problem_note != note:
+            logger.info(f"SIMLINE job {job_id}: {note}")
+        if failed_species or missing_outputs or problem_note:
+            partial = SimlinePartialError(failed_species, missing_outputs, problem_note)
             if not ok:
                 # failed_storage (set by the caller) takes precedence
                 logger.error(f"SIMLINE {partial} (job {job_id})")
