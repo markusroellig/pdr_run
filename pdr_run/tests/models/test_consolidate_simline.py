@@ -115,3 +115,22 @@ def test_purge_deletes_sim_object_when_backend_can(env):
     env['storage'].delete_file = lambda path: os.remove(os.path.join(env['store'], path)) or True
     assert run(env, purge=True)[0] == 'consolidated'
     assert not sim.exists()
+
+
+def test_selects_flagged_and_relaxed_nodes():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from pdr_run.database.models import Base, ModelNames, PDRModelJob
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    mn = ModelNames(model_name='grid1', model_path='/p')
+    session.add(mn)
+    session.flush()
+    for status in ('finished', 'finished_relaxed', 'flagged', 'timeout', 'pending'):
+        session.add(PDRModelJob(model_name_id=mn.id, model_job_name=f'100_30_30_{status}',
+                                status=status))
+    session.commit()
+    names = [n for _, n, _ in cs.select_nodes(session, 'grid1')]
+    assert names == ['100_30_30_finished', '100_30_30_finished_relaxed', '100_30_30_flagged']
+    session.close()

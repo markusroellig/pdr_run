@@ -172,6 +172,25 @@ def _purge(storage, remote):
     return True
 
 
+# Same status set as scripts/backfill_simline.py: a flagged or relaxed node has a complete
+# grid file too (the first production pass skipped them with status == 'finished').
+NODE_STATUSES = ('finished', 'finished_relaxed', 'flagged')
+
+
+def select_nodes(session, model_name, job_ids=None, limit=None):
+    """[(job id, model_job_name, model_path)] of the stored nodes of a model name."""
+    from pdr_run.database.models import ModelNames, PDRModelJob
+    q = (session.query(PDRModelJob)
+         .join(ModelNames, PDRModelJob.model_name_id == ModelNames.id)
+         .filter(ModelNames.model_name == model_name, PDRModelJob.status.in_(NODE_STATUSES)))
+    if job_ids:
+        q = q.filter(PDRModelJob.id.in_(job_ids))
+    q = q.order_by(PDRModelJob.id)
+    if limit:
+        q = q.limit(limit)
+    return [(j.id, j.model_job_name, j.model_name.model_path) for j in q.all()]
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--config', required=True, help='pdr_run YAML config of the grid')
@@ -200,15 +219,7 @@ def main(argv=None):
     storage = get_storage_backend(config)
     session = get_db_manager(database_config_for_run(config)).get_session()
     try:
-        q = (session.query(PDRModelJob)
-             .join(ModelNames, PDRModelJob.model_name_id == ModelNames.id)
-             .filter(ModelNames.model_name == model_name, PDRModelJob.status == 'finished'))
-        if args.job_ids:
-            q = q.filter(PDRModelJob.id.in_(args.job_ids))
-        q = q.order_by(PDRModelJob.id)
-        if args.limit:
-            q = q.limit(args.limit)
-        nodes = [(j.id, j.model_job_name, j.model_name.model_path) for j in q.all()]
+        nodes = select_nodes(session, model_name, args.job_ids, args.limit)
     finally:
         close_session(session, "consolidate_simline")
 

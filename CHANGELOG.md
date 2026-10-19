@@ -18,7 +18,9 @@ Details and configuration of every item are in the [README](README.md); the comm
   node a partial run. Older TEXTOUT without the line behave as before.
 - **`scripts/consolidate_simline.py`** (new): migrates existing grids with the separate `_simline.hdf5` object into
   `pdrgrid/pdrstruct<model>.hdf5` (superset and bit-identity check, attic copy `pdrgrid/attic_pre_simline/`, verified
-  overwrite; `--purge` optional). Not run automatically; see the README SIMLINE section.
+  overwrite; `--purge` optional). Not run automatically; see the README SIMLINE section. It selects the jobs
+  with status `finished`, `finished_relaxed` and `flagged` (as `backfill_simline.py`); the first production pass
+  selected `finished` only and skipped the 82 flagged and the 1 finished_relaxed tier-0 nodes (unit test added).
 
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
