@@ -29,6 +29,9 @@ Details and configuration of every item are in the [README](README.md); the comm
   overwrite; `--purge` optional). Not run automatically; see the README SIMLINE section. It selects the jobs
   with status `finished`, `finished_relaxed` and `flagged` (as `backfill_simline.py`); the first production pass
   selected `finished` only and skipped the 82 flagged and the 1 finished_relaxed tier-0 nodes (unit test added).
+  `--purge` also removes the SIMLINE object of a node whose grid file already carries the SIMLINE results (result
+  `purged`, grid file untouched), so a purge-only pass over an already consolidated grid is possible (unit test added;
+  used for the tier-0 clean-up on 2026-10-19).
 
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).

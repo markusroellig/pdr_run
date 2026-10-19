@@ -117,6 +117,17 @@ def test_purge_deletes_sim_object_when_backend_can(env):
     assert not sim.exists()
 
 
+def test_purge_only_for_already_consolidated_node(env):
+    main, sim = put(env, {}, {})
+    make_h5(main, True)                                   # grid file consolidated earlier
+    env['storage'].delete_file = lambda path: os.remove(os.path.join(env['store'], path)) or True
+    assert run(env)[0] == 'already'                       # without --purge nothing happens
+    assert sim.exists()
+    assert run(env, purge=True)[0] == 'purged'
+    assert not sim.exists() and main.exists()
+    assert not (main.parent / cs.ATTIC_DIR).exists()      # no attic for a node that was not replaced
+
+
 def test_selects_flagged_and_relaxed_nodes():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker

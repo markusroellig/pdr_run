@@ -18,7 +18,10 @@ job of the model (``pdr.model_name`` of the config, or ``--model``) this script
    ``.gz`` grid object stays ``.gz``), and verifies the stored object (size and
    MD5 where the backend reports them, otherwise by download; the local copy
    must be bit-identical to the SIMLINE file);
-4. keeps ``simlinegrid/pdrstruct<model>_simline.hdf5`` unless ``--purge`` is given.
+4. keeps ``simlinegrid/pdrstruct<model>_simline.hdf5`` unless ``--purge`` is given. With ``--purge`` the
+   SIMLINE object is deleted (remote and local copy) after a successful consolidation, and also for a node whose
+   grid file already carries the SIMLINE results (result ``purged``), so a second ``--purge`` pass over a grid
+   consolidated earlier removes the redundant objects without touching the grid files.
 
 A node is "already consolidated" if its SIMLINE object is absent or its grid
 file already carries SIMLINE ``By species`` datasets. The database is not
@@ -110,6 +113,11 @@ def consolidate_node(storage, model_path, model, tmp_dir, purge=False, dry_run=F
     else:
         main_plain = main_raw
     if has_simline_species(main_plain):
+        if purge:
+            # consolidated earlier (or by an in-place run): the SIMLINE object is redundant
+            if not _purge(storage, sim_stored):
+                return 'failed', f'already consolidated, but deleting {sim_stored} failed'
+            return 'purged', 'grid file already carries SIMLINE By species; SIMLINE object deleted'
         return 'already', 'grid file already carries SIMLINE By species'
     kt.retrieve_decompressed(storage, sim_stored, sim_plain)
     problems = verify_superset(main_plain, sim_plain)
