@@ -9,7 +9,9 @@ run that lost species) and re-runs pdr_run's own
 ``pdr_run.models.kosma_tau.run_simline`` for each of them, one at a time, in a
 fresh temporary directory. ``run_simline`` fetches the stored
 ``pdrgrid/pdrstruct<model>.hdf5`` from the configured storage, runs the
-pipeline and stores ``simlinegrid/...`` exactly as during a grid run.
+pipeline on it, stores the side files under ``simlinegrid/...`` and stores the
+augmented file back to ``pdrgrid/pdrstruct<model>.hdf5`` (overwritten; no separate
+``_simline.hdf5`` object).
 (With ``simline.bundle_outputs: true`` in the config the side files go into one
 archive ``simlinegrid/SIMLINE<model>.tar.gz``, as in the grid run.)
 

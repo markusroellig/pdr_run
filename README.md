@@ -1305,15 +1305,20 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
 - `--force-simline` runs SIMLINE even if `simline.enabled` is false and even if the model already exists in
   storage; in that case the model file is fetched from storage (`pdrgrid/pdrstruct<model>.hdf5`), which makes
   RT-only re-runs of an existing grid possible. Without the flag, a skipped node is not processed.
-- Input: a working copy `pdroutput/pdrstruct<model>_simline.hdf5` of the model file; the pipeline writes to
-  `simlineoutput/` (log: `TEXTOUT_SIMLINE`). The ONION results in `pdrgrid/` are not modified.
+- Input/output: the pipeline works IN PLACE on the grid file. In a grid run that is
+  `pdroutput/pdrstruct_s.hdf5`, which `copy_pdroutput` stores afterwards as `pdrgrid/pdrstruct<model>.hdf5`; in an
+  RT-only rerun (and `scripts/backfill_simline.py`) the stored `pdrgrid/pdrstruct<model>.hdf5` is fetched, augmented
+  and stored back under the same name (overwritten). The SIMLINE rows replace the ONION rows of the same species
+  (`By species/<sp>`, `Metadata/...`, `Line emission IR`) and add the `SIMLINE output/...` tree. The side files go
+  to `simlineoutput/` (log: `TEXTOUT_SIMLINE`).
 - Concurrency: the pipeline writes `simline.obs` (per-model beam) and `simlineinp_<model>_<species>.*` into its
   `simline_dir`. Each job therefore runs with its own `<job tmp dir>/simline_job/` that only symlinks `bin/`,
   `molecules/` and `obs.template` from the configured `simline_dir` (passed to the pipeline through the per-job
   config), so parallel workers never share a written file and the configured `simline_dir` (e.g. a frozen,
   read-only base) is never written. The directory is removed with the job directory.
-- Output in storage: `<model_path>/simlinegrid/pdrstruct<model>_simline.hdf5` (always its own object; the grid
-  collectors such as `simline/python/collect_grid_results.py` read only this file) plus the ~420 side files of
+- Output in storage: the grid file `pdrgrid/pdrstruct<model>.hdf5` (no separate SIMLINE HDF5 object since
+  2026-10-19; grids stored earlier still have `simlinegrid/pdrstruct<model>_simline.hdf5` and are not migrated
+  automatically) plus, under `simlinegrid/`, the ~420 side files of
   `simlineoutput/` (FITS cubes, ASCII spectra, `TEXTOUT_SIMLINE`) in one of two layouts:
   - `bundle_outputs: false` (default): one object per file, `simlinegrid/SIMLINE<model>.<file>`
     (`storage.compress_files` applies per file, e.g. `TEXTOUT_SIMLINE.gz`).
@@ -1522,7 +1527,7 @@ earlier row is no longer `pending` and, by default, skips (status `skipped`) eve
 |---|---|
 | Model files | `<storage.base_dir>/<model_name>/pdrgrid/`: `pdrstruct<model>.hdf5`, `pdrchem<model>.hdf5`, `pdr<model>.hdf` (if written), `TEXTOUT<model>`, `chemchk<model>.out`, `pdr_config<model>.json`, `CTRL_IND<model>`, `MCDRT<model>.tar.gz` |
 | ONION | `<model_name>/oniongrid/ONION<model>.*`, `TEXTOUT<model>_<species>` |
-| SIMLINE | `<model_name>/simlinegrid/SIMLINE<model>.*`, `pdrstruct<model>_simline.hdf5` |
+| SIMLINE | `<model_name>/simlinegrid/SIMLINE<model>.*` (side files only; the HDF5 results are in `pdrgrid/pdrstruct<model>.hdf5`) |
 | Job table | `pdr_model_jobs` (status, run-status and UV continuum columns, file paths); `hdf_files` (paths, checksums, sizes) |
 | Driver log | `logs/pdr_run.log` (directory `PDR_LOG_DIR`, default `logs/`, relative to the working directory) and the redirected stdout |
 | Temporary job directories | `pdr-job<ID>-*` in the system temp directory, removed after the job unless `--keep-tmp` |

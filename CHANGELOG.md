@@ -5,6 +5,14 @@ Details and configuration of every item are in the [README](README.md); the comm
 
 ## [Unreleased] - merged into `master` on 2026-10-18 (branches feature/status-json, feature/preflight-check, feature/grid1-status-uvcont, feature/simline-bundle, feature/simline-partial-fail, feature/rclone-stat, fix/long-run-db-session, deploy/grid1-t0-restart-2026-10-11; grid-1 production readiness, 2026-09-29 .. 2026-10-18)
 
+### Changed
+- **SIMLINE results are written into the grid pdrstruct file** (maintainer decision 2026-10-19). `run_simline`
+  works in place on `pdroutput/pdrstruct_s.hdf5` (stored afterwards by `copy_pdroutput` as
+  `pdrgrid/pdrstruct<model>.hdf5`); an RT-only rerun or `backfill_simline.py` fetches the grid file and stores it
+  back (overwrite, stored name/compression kept). The separate `simlinegrid/pdrstruct<model>_simline.hdf5` object
+  is no longer produced; `simlinegrid/` keeps only the side files. The FITS file names of new runs carry the stem
+  `pdrstruct_s_<species>...`. Existing stored grids are NOT migrated by this change (see the consolidation note).
+
 Prepared for the KOSMA-tau grid 1, tier 0 run on halley (MySQL database, rclone/S3 storage, 6 workers).
 Deployed on halley at `d4fd3ec`; rollback target `master` (`dc215a9`).
 
