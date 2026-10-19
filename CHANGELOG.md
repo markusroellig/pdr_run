@@ -5,6 +5,14 @@ Details and configuration of every item are in the [README](README.md); the comm
 
 ## [Unreleased] - merged into `master` on 2026-10-18 (branches feature/status-json, feature/preflight-check, feature/grid1-status-uvcont, feature/simline-bundle, feature/simline-partial-fail, feature/rclone-stat, fix/long-run-db-session, deploy/grid1-t0-restart-2026-10-11; grid-1 production readiness, 2026-09-29 .. 2026-10-18)
 
+### Added
+- **`pdr.queue_order` / `--queue-order`** (`natural` default, `cost_desc`, `cost_asc`): order in which the grid jobs
+  are handed to the workers, by predicted cost (density layer first, then median `execution_time` of finished
+  jobs of the same model name at the same (log n_s, log chi) / log n_s, heuristic (log chi, log M) without
+  history; stable ties). `natural` is the unchanged nested-loop order. LPT -1.8 % wall at 6 workers vs the tier-0
+  order; the main effect is the shorter tail. The order of a running grid is not changed; DB job ids stay in
+  natural order, `--rerun`/resume/`status` unaffected. See README "Job order of a grid".
+
 ### Changed
 - **SIMLINE results are written into the grid pdrstruct file** (maintainer decision 2026-10-19). `run_simline`
   works in place on `pdroutput/pdrstruct_s.hdf5` (stored afterwards by `copy_pdroutput` as

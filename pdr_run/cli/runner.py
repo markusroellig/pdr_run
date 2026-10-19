@@ -72,6 +72,7 @@ import traceback  # Add this import
 from datetime import datetime
 
 from pdr_run.core.engine import run_model, run_parameter_grid
+from pdr_run.core.queue_order import validate_queue_order
 from pdr_run.models.job_status import ALL_STATUSES, JOB_SUCCESS_STATES
 from pdr_run.config.default_config import (
     DEFAULT_PARAMETERS, non_default_parameters,
@@ -185,6 +186,11 @@ def parse_arguments():
                              "state that is not finished/finished_relaxed/flagged/skipped) "
                              "or literal states such as not_converged, aborted, timeout, "
                              "failed_storage. Default: existing nodes are skipped.")
+
+    parser.add_argument('--queue-order', choices=('natural', 'cost_desc', 'cost_asc'), default=None,
+                        help="Order in which grid jobs are given to the workers (overrides "
+                             "pdr.queue_order; default natural = nested parameter loops; "
+                             "cost_desc = most expensive predicted job first).")
 
     # Add keep-tmp option
     parser.add_argument('--keep-tmp', action='store_true',
@@ -346,6 +352,13 @@ def validate_config(config_to_validate):
     ``non_default_parameters``) for backward compatibility.
     """
     logger.info("Starting configuration validation...")
+
+    if isinstance(config_to_validate.get('pdr'), dict) and 'queue_order' in config_to_validate['pdr']:
+        try:
+            validate_queue_order(config_to_validate['pdr']['queue_order'])
+        except ValueError as exc:
+            logger.critical(f"{exc}. Aborting.")
+            sys.exit(1)
 
     unknown_param_count = 0
     for section_name in config_to_validate.keys():
@@ -669,7 +682,9 @@ def main():
                 from pdr_run.core.engine import _build_default_config
                 config = _build_default_config(params)
                 logger.info("Built default configuration with environment overrides")
-                
+            if args.queue_order:
+                config['pdr']['queue_order'] = args.queue_order
+
             job_ids = run_parameter_grid(
                 params=params,
                 model_name=model_name,

@@ -99,6 +99,7 @@ from pdr_run.models.parameters import (
     from_par_to_string, from_string_to_par, from_par_to_string_log
 )
 from pdr_run.models.kosma_tau import run_kosma_tau
+from pdr_run.core import queue_order
 from pdr_run.storage.base import get_storage_backend
 from pdr_run.utils.logging import sanitize_config
 
@@ -802,6 +803,20 @@ def run_parameter_grid(params=None, model_name=None, config=None, parallel=True,
         config
     )
     logger.info(f"Database entries created in {time.time() - creation_start:.2f} seconds")
+
+    # Order of the job list handed to the worker pool (pdr.queue_order). The job ids
+    # in the database stay in natural order (get_or_create, status and --rerun use them).
+    mode = queue_order.validate_queue_order(config['pdr'].get('queue_order', 'natural'))
+    if mode != 'natural':
+        try:
+            history = queue_order.fetch_history(get_model_name_id(model_name, model_path))
+        except Exception as exc:
+            logger.warning(f"Queue order: no run-time history ({exc}); heuristic only")
+            history = []
+        job_ids, costs = queue_order.order_jobs(param_combinations, job_ids, mode, history)
+        queue_order.log_order(mode, job_ids, costs)
+    else:
+        logger.info("Queue order 'natural' (nested parameter loops)")
 
     # Non-mutating detection of jobs stuck in status 'running' from a
     # previous, since-crashed driver process (see database.queries.

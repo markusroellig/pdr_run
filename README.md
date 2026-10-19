@@ -755,6 +755,27 @@ pdr_run --model-name grid_test --dens 1.0 2.0 3.0 --chi 1.0 10.0 100.0
 pdr_run --model-name parallel_test --parallel --workers 4 --dens 1.0 2.0 --chi 1.0 2.0
 ```
 
+### Job order of a grid (`pdr.queue_order`)
+
+The workers pull jobs from one list (joblib pool). `pdr.queue_order` (YAML, or `--queue-order` on the command
+line, which wins) sets its order:
+
+| value | order |
+|---|---|
+| `natural` (default) | nested parameter loops (metal, dens, mass, chi; density ascending as the outer loop), exactly as before |
+| `cost_desc` | most expensive predicted job first (LPT) |
+| `cost_asc` | cheapest first |
+
+Sort key: density layer first (log n_s), then the predicted cost within the layer; ties keep the natural order. The
+cost of a node is the median `execution_time` of the finished jobs of the same model name at the same (log n_s,
+log chi), else at the same log n_s; without history the heuristic is (log chi descending, log M descending)
+(`pdr_run/core/queue_order.py`). A fresh grid therefore starts with the highest density layer, highest chi, highest
+mass; a grid restarted over a database with finished nodes uses their measured times. The first 10 jobs and their
+predicted cost are logged at INFO at the start. Database job ids stay in natural order (only the hand-out order
+changes), so `--rerun`, resume and `status` are unaffected. A grid that is already running is not changed; the
+key applies at the next start. Effect (grid-1 tier-0 performance assessment): LPT -1.8 % wall at 6 workers vs
+the tier-0 order; the main effect is the shorter tail (the long n_s = 1e7 jobs no longer run alone at the end).
+
 ### Configuration File Override Examples
 ```bash
 # Environment overrides config file

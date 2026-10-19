@@ -140,6 +140,10 @@ PDR_CONFIG = {
     # group is killed as for the wall-time cap and the job is marked
     # 'stalled'. Once step 2 is seen only max_walltime_s applies.
     'stall_first_iteration_s': None,
+    # Order in which the grid jobs are handed to the workers: 'natural' (default,
+    # nested parameter loops), 'cost_desc' (most expensive predicted job first, LPT)
+    # or 'cost_asc'. See pdr_run.core.queue_order. CLI: --queue-order.
+    'queue_order': 'natural',
 }
 
 # UV H2 dissociation continuum post-processing (opt-in). Appends
