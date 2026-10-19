@@ -1557,8 +1557,8 @@ def fetch_simline_outputs(storage, model_path, model, dest_dir):
     exists, else the single files ``simlinegrid/SIMLINE<model>.*`` (files
     stored as ``.gz`` by ``storage.compress_files`` are decompressed). Both
     give the same plain files ``SIMLINE<model>.<fname>``; the sorted list of
-    their names is returned. The SIMLINE HDF5 ``pdrstruct<model>_simline.hdf5``
-    is a separate object and not part of this."""
+    their names is returned. The SIMLINE results in the HDF5 live in the grid
+    file ``pdrgrid/pdrstruct<model>.hdf5`` and are not part of this."""
     import tarfile
     grid_dir = os.path.join(model_path, 'simlinegrid')
     bundle_name = simline_bundle_name(model)
@@ -1747,18 +1747,19 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         'bundle_outputs': bool (default False; see below),
     }
 
-    Storage layout under simlinegrid/: the SIMLINE-augmented HDF5 is always
-    its own object ``pdrstruct<model>_simline.hdf5`` (read by the grid
-    collectors). The ~420 side files of simlineoutput/ (FITS, ASCII,
+    The SIMLINE results are written INTO the grid file
+    ``pdrgrid/pdrstruct<model>.hdf5`` (maintainer decision 2026-10-19); there
+    is no separate SIMLINE HDF5 object. In a grid run the pipeline works on
+    ``<tmp_dir>/pdroutput/pdrstruct_s.hdf5``, which ``copy_pdroutput`` stores
+    afterwards. In an RT-only rerun (no local file) the stored grid file is
+    fetched, augmented and stored back under its stored name (overwritten;
+    its database checksum/size entries are not refreshed).
+
+    Storage layout under simlinegrid/: the ~420 side files of simlineoutput/ (FITS, ASCII,
     TEXTOUT_SIMLINE) are stored one by one as ``SIMLINE<model>.<file>``
     (default), or with ``bundle_outputs: true`` as ONE archive
     ``SIMLINE<model>.tar.gz`` whose members carry exactly these names, i.e.
     one upload instead of ~420. ``fetch_simline_outputs`` reads both layouts.
-
-    Unlike ONION, which modifies the grid pdrstruct in place, SIMLINE
-    results are written into a separate working copy that is stored under
-    simlinegrid/pdrstruct<model>_simline.hdf5, so the ONION intensities in
-    pdrgrid/ remain untouched.
 
     Returns False if storing a result file failed after all retries; raises
     if the pipeline itself fails. The driver exits 0 as soon as one species
@@ -1799,13 +1800,18 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
         workdir = os.path.abspath(tmp_dir)
         outdir = os.path.join(workdir, 'pdroutput')
         os.makedirs(outdir, exist_ok=True)
-        workfile = os.path.join(outdir, f'pdrstruct{model}_simline.hdf5')
-        local_struct = os.path.join(outdir, 'pdrstruct_s.hdf5')
-        if os.path.exists(local_struct):
-            shutil.copyfile(local_struct, workfile)
-        else:
-            remote_struct = os.path.join(model_path, 'pdrgrid', f'pdrstruct{model}.hdf5')
+        # The pipeline works IN PLACE on the grid file (maintainer decision
+        # 2026-10-19: one file per model). Grid run: pdroutput/pdrstruct_s.hdf5,
+        # which copy_pdroutput stores afterwards as pdrgrid/pdrstruct<model>.hdf5.
+        # RT-only rerun: the stored grid file is fetched under the same local
+        # name and stored back (overwritten) below.
+        workfile = os.path.join(outdir, 'pdrstruct_s.hdf5')
+        remote_struct = os.path.join(model_path, 'pdrgrid', f'pdrstruct{model}.hdf5')
+        refetched = not os.path.exists(workfile)
+        if refetched:
             logger.info(f"run_simline: fetching {remote_struct} from storage")
+            # keep the stored name (plain or .gz) when storing it back
+            stored_struct = resolve_stored_name(storage, remote_struct) or remote_struct
             retrieve_decompressed(storage, remote_struct, workfile)
 
         # --- per-job pipeline config: base config with an absolute simline_dir
@@ -1881,13 +1887,25 @@ def run_simline(job_id, tmp_dir='./', config=None, session=None):
                     stored += 1
                 else:
                     ok = False
-        ok &= _store(storage, workfile, os.path.join(
-            grid_dir, f'pdrstruct{model}_simline.hdf5'))
+        if refetched:
+            # RT-only rerun: the augmented grid file replaces the stored one
+            # (a grid run leaves it to copy_pdroutput)
+            if stored_struct.endswith(GZ_SUFFIX):
+                gz_tmp = workfile + GZ_SUFFIX
+                try:
+                    gzip_file(workfile, gz_tmp)
+                    ok &= _store(storage, gz_tmp, stored_struct)
+                finally:
+                    if os.path.exists(gz_tmp):
+                        os.remove(gz_tmp)
+            else:
+                ok &= _store(storage, workfile, stored_struct)
         if ok:
             logger.info(
-                f"Stored SIMLINE-augmented HDF5 and {stored} output file(s)"
+                f"Stored {stored} SIMLINE output file(s)"
                 f"{' (one archive)' if simline_cfg.get('bundle_outputs', False) else ''} "
-                f"under simlinegrid/ for job {job_id}")
+                f"under simlinegrid/ for job {job_id}"
+                f"{'; grid file ' + stored_struct + ' updated' if refetched else ''}")
         if failed_species or missing_outputs or note:
             partial = SimlinePartialError(failed_species, missing_outputs, note)
             if not ok:

@@ -13,7 +13,7 @@ from pdr_run.models import kosma_tau
 from pdr_run.storage.local import LocalStorage
 
 MODEL = '100_30_30_-10'
-STEM = f'pdrstruct{MODEL}_simline'
+STEM = 'pdrstruct_s'          # the pipeline works in place on pdroutput/pdrstruct_s.hdf5
 SPECIES = ['CO', 'C+', '13C+', 'C', 'O']
 
 
@@ -194,15 +194,14 @@ def test_run_simline_partial_stores_everything_then_raises(env):
         env['run'](textout(failed=failed), have, bundle=True)
     assert str(ei.value) == ('partial: failed species C+, 13C+, C; '
                              'missing outputs O [fits]')
-    assert sorted(os.listdir(env['grid_dir'])) == sorted(
-        [f'SIMLINE{MODEL}.tar.gz', f'pdrstruct{MODEL}_simline.hdf5'])
+    assert sorted(os.listdir(env['grid_dir'])) == [f'SIMLINE{MODEL}.tar.gz']
 
 
 def test_run_simline_partial_file_by_file_layout(env):
     with pytest.raises(kosma_tau.SimlinePartialError):
         env['run'](textout(failed=('O',)), SPECIES[:-1], bundle=False)
     names = os.listdir(env['grid_dir'])
-    assert f'pdrstruct{MODEL}_simline.hdf5' in names
+    assert not any(n.endswith('_simline.hdf5') for n in names)
     assert any(n.startswith(f'SIMLINE{MODEL}.TEXTOUT_SIMLINE') for n in names)
 
 
@@ -215,3 +214,20 @@ def test_run_simline_full_failure_unchanged(env):
     with pytest.raises(RuntimeError, match='exited with 1') as ei:
         env['run'](textout(failed=tuple(SPECIES)), [], rc=1)
     assert not isinstance(ei.value, kosma_tau.SimlinePartialError)
+
+
+# ------------------------------------------------ RT-only rerun: grid file in place
+
+@pytest.mark.parametrize('stored_gz', [False, True])
+def test_run_simline_rt_only_stores_back_into_pdrgrid(env, tmp_path, stored_gz):
+    import gzip
+    pdrgrid = tmp_path / 'store' / 'grid1' / 'pdrgrid'
+    pdrgrid.mkdir(parents=True)
+    name = f'pdrstruct{MODEL}.hdf5' + ('.gz' if stored_gz else '')
+    old = b'old grid file'
+    (pdrgrid / name).write_bytes(gzip.compress(old) if stored_gz else old)
+    # fresh tmp dir without a local pdrstruct_s.hdf5 (PDR skipped / backfill)
+    os.remove(tmp_path / 'work' / 'pdroutput' / 'pdrstruct_s.hdf5')
+    assert env['run'](textout(), SPECIES) is True
+    assert sorted(os.listdir(pdrgrid)) == [name]          # same name, no new object
+    assert not any(n.endswith('_simline.hdf5') for n in os.listdir(env['grid_dir']))

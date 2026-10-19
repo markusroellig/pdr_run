@@ -15,9 +15,9 @@ from pdr_run.storage.local import LocalStorage
 
 MODEL = '100_40_-30_60_00'
 # what the fake pipeline writes into simlineoutput/ (run_simline adds TEXTOUT_SIMLINE)
-OUTPUTS = {f'jtemp_pdrstruct{MODEL}_simline_{sp}.smli': f'{sp} spectrum\n'.encode() * 50
+OUTPUTS = {f'jtemp_pdrstruct_s_{sp}.smli': f'{sp} spectrum\n'.encode() * 50
            for sp in ('CO', '13CO', 'C+', 'O')}
-OUTPUTS.update({f'pdrstruct{MODEL}_simline_{sp}.{i}-{i - 1}.fits': bytes([i % 256]) * 2880
+OUTPUTS.update({f'pdrstruct_s_{sp}.{i}-{i - 1}.fits': bytes([i % 256]) * 2880
                 for sp in ('CO', '13CO', 'C+', 'O') for i in range(1, 6)})
 
 _FAKE_DRIVER = '''\
@@ -103,10 +103,9 @@ def test_bundle_one_store_call_for_all_side_files(env):
     assert env['run'](True) is True
     st = env['storage'].stored
     bundle = os.path.join('simlinegrid', f'SIMLINE{MODEL}.tar.gz')
-    hdf = os.path.join('simlinegrid', f'pdrstruct{MODEL}_simline.hdf5')
-    assert len(st) == 2 and st[0].endswith(bundle) and st[1].endswith(hdf)
-    assert sorted(os.listdir(env['grid_dir'])) == sorted(
-        [f'SIMLINE{MODEL}.tar.gz', f'pdrstruct{MODEL}_simline.hdf5'])
+    # grid run: only the archive; the grid file is stored later by copy_pdroutput
+    assert len(st) == 1 and st[0].endswith(bundle)
+    assert sorted(os.listdir(env['grid_dir'])) == [f'SIMLINE{MODEL}.tar.gz']
     with tarfile.open(env['grid_dir'] / f'SIMLINE{MODEL}.tar.gz') as tar:
         members = tar.getmembers()
         assert sorted(m.name for m in members) == _expected_names()
@@ -133,15 +132,15 @@ def test_default_keeps_file_by_file_layout(env, flag):
     names = sorted(os.listdir(env['grid_dir']))
     assert f'SIMLINE{MODEL}.tar.gz' not in names
     assert f'SIMLINE{MODEL}.TEXTOUT_SIMLINE.gz' in names        # compress_files
-    assert len(env['storage'].stored) == len(OUTPUTS) + 2      # + TEXTOUT + HDF5
+    assert len(env['storage'].stored) == len(OUTPUTS) + 1      # + TEXTOUT
+    assert not any(n.endswith('_simline.hdf5') for n in names)
 
 
 def test_bundle_store_failure_returns_false_and_cleans_up(env):
     env['storage'].fail_suffix = '.tar.gz'
     assert env['run'](True) is False
     assert not list(env['workdir'].glob('*.tar.gz'))
-    # the HDF5 is still attempted (same as the per-file path)
-    assert env['storage'].stored[-1].endswith(f'pdrstruct{MODEL}_simline.hdf5')
+    assert not any(n.endswith('_simline.hdf5') for n in env['storage'].stored)
 
 
 def test_fetch_reads_both_layouts_identically(env):
