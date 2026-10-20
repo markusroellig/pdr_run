@@ -39,6 +39,7 @@ Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
   - [UV continuum](#uv-continuum)
   - [ONION](#onion)
   - [SIMLINE](#simline)
+- [UQ campaigns](#uq-campaigns)
 - [Production Grid Run](#production-grid-run)
   - [Grid-1 template](#grid-1-template)
 - [Troubleshooting](#troubleshooting)
@@ -1379,6 +1380,122 @@ pdr_run --grid --force-simline --config my_config.yaml   # also for nodes whose 
   logged. In `pdr_run status --json` such a node is class `warn` with `simline_failed_species` (failed plus
   missing-output species) and `warn_reason` (`"SIMLINE partial: C+, 13C+, O missing"`). `pdr_run --check` verifies driver, binary,
   `obs.template`, `molecules/` and the config (`post.simline`), and names the side-file layout.
+
+## UQ campaigns
+
+Blocks of the KOSMA-tau uncertainty study (noise ensembles A1a/A1b, iteration test A3, knob pairs B, rate Monte
+Carlo C1, off-node nodes E2) are not grid nodes: the **same node** is run many times with a different override of
+the template. The grid machinery (one database row and one stored result per node) cannot express that, so a
+campaign is a **database-free side path**: `pdr_run campaign` reuses only the job-environment set-up, the
+process-group kill, the stall watchdog and the job-state classification of the grid runner. No database row is
+read or written (`pdr_model_jobs` is untouched, no `PDR_DB_*` environment is needed), nothing is uploaded to the
+storage backend, no ONION/SIMLINE/UV-continuum step runs. The IR and UV spectra in `pdrstruct_s.hdf5` come from
+`pdrexe` itself (`h2.level_treatment 1` in the template), so the single result file is complete.
+
+Three pieces:
+
+| piece | what it does |
+|---|---|
+| `pdr_run campaign FILE` (`pdr_run/cli/campaign.py`) | runs the jobs of a campaign file with one pinned binary, stores the results, writes the manifest |
+| `tools/uq_jobs.py BLOCK ...` | generates the campaign file of a block |
+| `tools/uq_collect.py CAMPAIGN_DIR` | collects all results of a campaign into one HDF5 (`collected.h5`) |
+
+### Campaign file
+
+YAML (or JSON). `pdr` is the `pdr` section of a grid config (the pinned binary lives in `pdr.base_dir`, see
+[Production Grid Run](#production-grid-run) step 3); `template` is the grid-1 tier-0 template with its four node
+placeholders.
+
+```yaml
+campaign:
+  name: uq_a1a_20261021        # results: <out_dir>/<name>/<label>/
+  block: A1a
+  out_dir: /data/uq
+  template: /path/pdr_config.json.grid1.template
+  metal: 100                   # percent, grid convention
+  workers: 6                   # concurrent pdrexe (halley: 7 is the memory limit)
+pdr:
+  base_dir: /path/to/copy_base
+  pdr_file_name: pdrexe_uq_<hash>
+  onion_file_name: onionexe    # must exist in base_dir (the job environment links them), they are not run
+  getctrlind_file_name: getctrlind
+  mrt_file_name: mrt.exe
+  chem_database: chem_rates_grid1_2026-10.dat
+  max_walltime_s: 86400
+jobs:
+  - label: a1a_n5_M0_x2_k03    # unique; directory name
+    node: [5.0, 0.0, 2.0]      # log10 n_s, log10 M [Msun], log10 chi
+    overrides:                 # deep-merged into the rendered template
+      physical_params: {cosmic_ray_rate: 7.000000000021e-17}
+```
+
+The node is converted as the grid does (tenth-dex values via `10**(0.1*t)`, radius from the mass with the
+template's `density_law_exponent`/`core_radius`, four-digit scientific formatting), so a campaign job on a grid
+node has the input of the grid job; a job without overrides gets the substituted template byte-for-byte. Override
+keys must exist in the template (typo guard); the `uncertainty` section of the `feature/uq-knobs` code is checked
+against its key list (`pe_heating_scale`, `h2_formation_scale`, `grain_recombination_scale`, `crphot_scale`,
+`h2star_scale.<cplus|splus|o|n|s|shplus|hplus>`, `collision_scale.<o_h|cplus_h|cplus_h2|h2_h>`,
+`extra_global_iterations`, `reaction_factor_file`), and a binary without the section is refused when a job
+uses it (the code would ignore the key silently).
+
+### Running
+
+```bash
+pdr_run campaign FILE --check       # validate everything, write nothing; exit 0 = PASS
+pdr_run campaign FILE --dry-run     # write manifest.json and one merged pdr_config.json per job, run nothing
+pdr_run campaign FILE               # run; jobs with a stored result are skipped (resume after an interruption)
+pdr_run campaign FILE --status      # table of the job states on disk
+pdr_run campaign FILE --rerun [--only LABEL ...]    # recompute
+```
+
+Per job `<out_dir>/<name>/<label>/` holds `pdr_config.json` (the merged config that was run), `job.json`
+(status, node, overrides, convergence fields, wall time, sha256 of config and result), `pdrstruct_s.hdf5` (only
+for models that ran to the end: finished, finished_relaxed, flagged, not_converged), `run_status.json`,
+`run.log.gz` (screen output). `<out_dir>/<name>/manifest.json` records the binary, template and network sha256,
+the pdr_run commit, the host and the full job list with overrides; a resumed campaign with a different
+binary/template/network is refused (`--force` overrides). The campaign file is copied next to the manifest. The
+exit code is 1 when a job ended in a state other than finished/finished_relaxed/flagged.
+
+### Generating a block
+
+```bash
+python3 tools/uq_jobs.py a1a --name uq_a1a_20261021 --out a1a.yaml --out-dir /data/uq \
+    --template /path/pdr_config.json.grid1.template --pdr-from grid1.yaml \
+    --base-dir /path/to/copy_base --pdr-file-name pdrexe_uq_<hash> \
+    --nodes "5,0,2;6,0,3" --k-max 9
+```
+
+`--pdr-from` copies the `pdr` section of a grid config; the explicit `--base-dir`, `--pdr-file-name`,
+`--chem-database`, `--max-walltime-s` override it. Nodes: `--nodes "n,M,chi;..."`, `--nodes-file`, and/or
+`--nodes-grid "logn=4,4.5;logM=0;logchi=1,2"` (cross product). Labels are `<block>_n<logn>_M<logM>_x<logchi>_<variant>`.
+
+| block | jobs per node | overrides |
+|---|---|---|
+| `a1a` | k = 0..`--k-max` (10) | `physical_params.cosmic_ray_rate` = zeta * (1 + k * 1e-12), zeta from the template (`--zeta`) |
+| `a1b` | `ref`, one per `--rows` line, `iter1` | one-line `reaction_factor_file` (factor `--factor`, default 1.1, on the network line; written to `--factor-dir`); `uncertainty.extra_global_iterations 1` (a scaling of the initial abundances does not exist in the code) |
+| `a3` | `iter0`, `iter1`, `iter2`, `iter4` (`--extra`) | `uncertainty.extra_global_iterations` |
+| `b` | `ref` + every `--knobs` entry (default all 15) x `--factors` (0.5, 2) | `uncertainty.<knob>` |
+| `c1` | `ref` + one per `factors_NNNN.txt` of `--factor-dir` (first `--n`) | `uncertainty.reaction_factor_file`; the files come from `tools/uq/uq_rates.py sample` of the kosma-tau repository |
+| `e2` | one per node | none (half-decade nodes etc.) |
+
+The unperturbed `ref` job (same binary, same machine) is part of every block where k = 0 / +0 iterations is not
+itself the reference: a perturbation is only meaningful against a reference of the same binary.
+
+### Collecting
+
+```bash
+python3 tools/uq_collect.py /data/uq/uq_a1a_20261021 [--uv-lines]      # -> <campaign_dir>/collected.h5
+python3 tools/uq_collect.py --single pdrstruct_s.hdf5                  # one file, JSON to the screen
+```
+
+`collected.h5` has one row per job in manifest order (a job without result is a NaN row with `has_output = 0`):
+`/jobs/*` (label, status, convergence, iterations, node, overrides_json, hashes), `/ir/line_table` and
+`/ir/intensity` (all 4779 lines of `Spectrum IR small`), `/uv/total`, `/columns/species` and `/columns/N`,
+`/structure/{T_gas_surface,T_gas_deep,AV_total}`, `/structure/front_AV/{H_H2,Cp_C,C_CO,Sp_S}` (A_V where
+n(H) = 2 n(H2), n(C+) = n(C), n(C) = n(CO), n(S+) = n(S), log-linear crossing from the surface), `/uq/uq_*` (the
+root attributes of the files). Unfilled surface rows (n_H < 1 cm^-3) are ignored.
+
+Tests: `pytest pdr_run/tests/unit/test_uq_campaign.py` (no `pdrexe`: a shell script stands in for it).
 
 ## Production Grid Run
 

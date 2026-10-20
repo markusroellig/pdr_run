@@ -3,6 +3,25 @@
 All notable changes to pdr_run. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Details and configuration of every item are in the [README](README.md); the commit hash is given per item.
 
+## [Unreleased] - feature/uq-campaigns (uncertainty-study tooling, 2026-10-20)
+
+### Added
+- **`pdr_run campaign FILE`** (`pdr_run/cli/campaign.py`): database-free runner for lists of (node, JSON override)
+  jobs with one pinned binary - the blocks of the KOSMA-tau uncertainty study run the same node many times with
+  different template overrides, which the node-keyed grid rows cannot express. Reuses the job environment,
+  process-group kill, stall watchdog and `determine_job_status` of the grid runner; no database access. Writes per
+  job `pdr_config.json`, `job.json`, `pdrstruct_s.hdf5`, `run_status.json`, `run.log.gz` under
+  `<out_dir>/<name>/<label>/` and a `manifest.json` (binary/template/network sha256, jobs, overrides); resumes by
+  skipping finished jobs; `--check`, `--dry-run`, `--status`, `--rerun`, `--only`. A job without overrides gets the
+  byte-identical grid config of its node. See README "UQ campaigns".
+- **`tools/uq_jobs.py`** (campaign files for blocks A1a, A1b, A3, B, C1, E2) and **`tools/uq_collect.py`** (one
+  HDF5 per campaign: IR line intensities, UV total, column densities, T_gas surface/deep, front A_V of H/H2,
+  C+/C, C/CO, S+/S, `uq_*` root attributes, job table).
+
+### Effect on results (rule 13)
+No effect on grid runs: bit-identical (the grid code path is untouched; only `entry.py` dispatches the new
+sub-command).
+
 ## [Unreleased] - merged into `master` on 2026-10-18 (branches feature/status-json, feature/preflight-check, feature/grid1-status-uvcont, feature/simline-bundle, feature/simline-partial-fail, feature/rclone-stat, fix/long-run-db-session, deploy/grid1-t0-restart-2026-10-11; grid-1 production readiness, 2026-09-29 .. 2026-10-18)
 
 ### Added
