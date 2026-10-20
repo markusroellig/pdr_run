@@ -1443,7 +1443,7 @@ uses it (the code would ignore the key silently).
 ```bash
 pdr_run campaign FILE --check       # validate everything, write nothing; exit 0 = PASS
 pdr_run campaign FILE --dry-run     # write manifest.json and one merged pdr_config.json per job, run nothing
-pdr_run campaign FILE               # run; jobs with a stored result are skipped (resume after an interruption)
+pdr_run campaign FILE               # run; jobs whose model ran to the end and has a stored result are skipped (resume)
 pdr_run campaign FILE --status      # table of the job states on disk
 pdr_run campaign FILE --rerun [--only LABEL ...]    # recompute
 ```

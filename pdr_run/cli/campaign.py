@@ -357,10 +357,11 @@ def read_job_state(jdir):
 
 
 def job_done(jdir):
-    """A job counts as done when its job.json is terminal and its result file is there (if one is expected)."""
-    from pdr_run.models.job_status import SUCCESS_STATUSES
+    """A job counts as done when its job.json says the model ran to the end (finished, finished_relaxed, flagged,
+    not_converged - a deterministic rerun of a not_converged model would not help) and its result file is there."""
+    from pdr_run.models.job_status import COMPLETE_OUTPUT_STATUSES
     state = read_job_state(jdir)
-    if not state or state.get('status') not in SUCCESS_STATUSES:
+    if not state or state.get('status') not in COMPLETE_OUTPUT_STATUSES:
         return False
     return os.path.isfile(os.path.join(jdir, STRUCT_FILE))
 
