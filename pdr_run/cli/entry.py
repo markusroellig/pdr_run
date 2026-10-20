@@ -3,6 +3,7 @@
 Dispatches ``pdr_run status ...`` to the read-only status collector *before*
 ``pdr_run.cli.runner`` is imported: importing the runner configures logging and
 creates the ``logs/`` directory, which a read-only status call must not do.
+``pdr_run campaign FILE`` (database-free UQ campaign, cli/campaign.py) likewise.
 Everything else goes to the run CLI unchanged.
 """
 
@@ -13,6 +14,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'status':
         from pdr_run.cli.status import main as status_main
         sys.exit(status_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == 'campaign':
+        from pdr_run.cli.campaign import main as campaign_main
+        sys.exit(campaign_main(sys.argv[2:]))
     from pdr_run.cli.runner import main as runner_main
     return runner_main()
 
